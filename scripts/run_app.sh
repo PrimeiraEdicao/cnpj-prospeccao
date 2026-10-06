@@ -5,14 +5,29 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 CNPJ_VENV="$PROJECT_ROOT/.venv-cnpj312"
 
-if [[ ! -x "$CNPJ_VENV/bin/python" ]]; then
+venv_ready() {
+    [[ -x "$CNPJ_VENV/bin/python" ]] &&
+        "$CNPJ_VENV/bin/python" -c \
+            'import sys, pip; assert sys.version_info[:2] == (3, 12)' \
+            >/dev/null 2>&1
+}
+
+if ! venv_ready; then
+    # A presença do executável não garante um ambiente completo: quando
+    # ensurepip está ausente, o venv deixa bin/python, mas não instala pip.
     if command -v python3.12 >/dev/null 2>&1; then
-        python3.12 -m venv "$CNPJ_VENV"
-    else
-        # Codespaces existentes podem usar Python 3.14. O uv instala 3.12
-        # para este projeto sem substituir o Python global do Codespace.
-        python -m pip install --user uv
-        python -m uv venv --python 3.12 --seed "$CNPJ_VENV"
+        if ! python3.12 -m venv "$CNPJ_VENV"; then
+            echo "Não foi possível preparar o venv padrão; usando uv."
+        fi
+    fi
+
+    if ! venv_ready; then
+        # uv cria e instala pip sem depender de ensurepip/python3.12-venv.
+        # --clear recria apenas o ambiente de dependências deste projeto.
+        if ! python -m uv --version >/dev/null 2>&1; then
+            python -m pip install --user uv
+        fi
+        python -m uv venv --python 3.12 --seed --clear "$CNPJ_VENV"
     fi
 fi
 

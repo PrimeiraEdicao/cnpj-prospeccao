@@ -93,7 +93,7 @@ git pull origin main
 bash scripts/run_app.sh
 ```
 
-O script instala as dependências em `.venv-cnpj312` e abre o Streamlit na porta 8501. Se um Codespace antigo ainda usar Python 3.14, ele obtém Python 3.12 com `uv` quando necessário, sem exigir reconstrução do ambiente. Isso também evita instalar pacotes no Python global.
+O script instala as dependências em `.venv-cnpj312` e abre o Streamlit na porta 8501. Se um Codespace antigo ainda usar Python 3.14, ele obtém Python 3.12 com `uv` quando necessário, sem exigir reconstrução do ambiente. Se o Python 3.12 estiver disponível, mas faltar `ensurepip`/`python3.12-venv`, o script também usa `uv` para recriar o ambiente incompleto e instalar `pip`, sem precisar de `sudo apt install`. As dependências do app ficam no ambiente do projeto.
 
 Na aba **Ports**, abra a porta **8501** no navegador. Para encerrar, pressione `Ctrl+C` no terminal. Para instalar sem iniciar a interface, use `bash scripts/run_app.sh --setup-only`.
 
