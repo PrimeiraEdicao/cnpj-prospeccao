@@ -4,15 +4,36 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import quote, unquote
+from xml.etree import ElementTree
 
 import requests
-from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-ROOT_URL = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/"
-USER_AGENT = "Mozilla/5.0 (compatible; CNPJProspeccao/1.0; +https://github.com/)"
+# Desde 2026, a Receita publica o CNPJ em um compartilhamento público Nextcloud/WebDAV.
+# O token abaixo é o compartilhamento oficial atualmente divulgado no catálogo do CNPJ.
+SHARE_TOKEN = os.getenv("RECEITA_SHARE_TOKEN", "YggdBLfdninEJX9")
+WEBDAV_ROOT_URL = os.getenv(
+    "RECEITA_WEBDAV_URL",
+    "https://arquivos.receitafederal.gov.br/public.php/webdav",
+).rstrip("/")
+DIRECT_FILES_ROOT_URL = os.getenv(
+    "RECEITA_DIRECT_FILES_URL",
+    f"https://arquivos.receitafederal.gov.br/public.php/dav/files/{SHARE_TOKEN}",
+).rstrip("/")
+
+# Mantido como alias por compatibilidade com chamadas antigas do módulo.
+ROOT_URL = WEBDAV_ROOT_URL
+USER_AGENT = os.getenv(
+    "RECEITA_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36",
+)
+DAV_NS = {"d": "DAV:"}
 
 
 @dataclass(frozen=True)
@@ -21,66 +42,146 @@ class Release:
     url: str
 
 
-def _get(url: str, timeout: int = 120) -> requests.Response:
-    r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
-    r.raise_for_status()
-    return r
+def _build_session() -> requests.Session:
+    retry = Retry(
+        total=6,
+        connect=6,
+        read=6,
+        status=6,
+        backoff_factor=1.5,
+        status_forcelist=(408, 425, 429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET", "HEAD", "PROPFIND"}),
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=4)
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT, "Accept": "*/*"})
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+_SESSION = _build_session()
+
+
+def _propfind(url: str, timeout: int = 120) -> bytes:
+    """Lista um diretório do compartilhamento público da Receita via WebDAV."""
+    response = _SESSION.request(
+        "PROPFIND",
+        url.rstrip("/") + "/",
+        auth=(SHARE_TOKEN, ""),
+        headers={"Depth": "1"},
+        timeout=(30, timeout),
+    )
+    response.raise_for_status()
+    return response.content
+
+
+def _dav_hrefs(content: bytes) -> list[str]:
+    root = ElementTree.fromstring(content)
+    hrefs: list[str] = []
+    for item in root.findall("d:response", DAV_NS):
+        href = item.findtext("d:href", default="", namespaces=DAV_NS)
+        if href:
+            hrefs.append(unquote(href))
+    return hrefs
+
+
+def _release_names_from_dav(content: bytes) -> list[str]:
+    found: set[str] = set()
+    for href in _dav_hrefs(content):
+        match = re.search(r"/(20\d{2}-\d{2})/?$", href)
+        if match:
+            found.add(match.group(1))
+    return sorted(found)
+
+
+def _zip_names_from_dav(content: bytes) -> list[str]:
+    found: set[str] = set()
+    for href in _dav_hrefs(content):
+        match = re.search(r"/([^/]+\.zip)$", href, flags=re.IGNORECASE)
+        if match:
+            found.add(match.group(1))
+    return sorted(found)
 
 
 def discover_releases(root_url: str = ROOT_URL) -> list[Release]:
-    html = _get(root_url).text
-    soup = BeautifulSoup(html, "html.parser")
-    found: dict[str, Release] = {}
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        m = re.search(r"(20\d{2}-\d{2})/?$", href)
-        if not m:
-            continue
-        name = m.group(1)
-        found[name] = Release(name=name, url=urljoin(root_url, href if href.endswith("/") else href + "/"))
-    return sorted(found.values(), key=lambda x: x.name)
+    names = _release_names_from_dav(_propfind(root_url))
+    return [Release(name=name, url=f"{root_url.rstrip('/')}/{name}/") for name in names]
 
 
 def resolve_release(requested: str | None = None, root_url: str = ROOT_URL) -> Release:
     releases = discover_releases(root_url)
     if not releases:
-        raise RuntimeError("Não foi possível descobrir competências no diretório público da Receita.")
+        raise RuntimeError(
+            "Não foi possível descobrir competências no compartilhamento WebDAV público da Receita."
+        )
     if requested:
         for rel in releases:
             if rel.name == requested:
                 return rel
-        raise ValueError(f"Competência {requested!r} não encontrada. Última disponível: {releases[-1].name}")
+        raise ValueError(
+            f"Competência {requested!r} não encontrada. Última disponível: {releases[-1].name}"
+        )
     return releases[-1]
 
 
 def list_zip_urls(release: Release) -> list[str]:
-    html = _get(release.url).text
-    soup = BeautifulSoup(html, "html.parser")
-    urls: list[str] = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if href.lower().endswith(".zip"):
-            urls.append(urljoin(release.url, href))
-    return sorted(set(urls))
+    names = _zip_names_from_dav(_propfind(release.url))
+    base = f"{DIRECT_FILES_ROOT_URL}/{release.name}"
+    return [f"{base}/{quote(name)}" for name in names]
 
 
 def select_files(urls: list[str], token: str) -> list[str]:
     token_lower = token.lower()
-    return [u for u in urls if token_lower in Path(u).name.lower()]
+    return [u for u in urls if token_lower in unquote(Path(u).name).lower()]
 
 
-def download(url: str, destination: str | Path, chunk_size: int = 2**20) -> Path:
+def download(
+    url: str,
+    destination: str | Path,
+    chunk_size: int = 2**20,
+    attempts: int = 5,
+) -> Path:
+    """Baixa arquivo grande com tentativas e retomada parcial por HTTP Range."""
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     partial = destination.with_suffix(destination.suffix + ".part")
-    with requests.get(url, headers={"User-Agent": USER_AGENT}, stream=True, timeout=180) as r:
-        r.raise_for_status()
-        with open(partial, "wb") as f:
-            for chunk in r.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    f.write(chunk)
-    partial.replace(destination)
-    return destination
+
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        existing = partial.stat().st_size if partial.exists() else 0
+        headers: dict[str, str] = {}
+        if existing:
+            headers["Range"] = f"bytes={existing}-"
+
+        try:
+            with _SESSION.get(
+                url,
+                headers=headers,
+                stream=True,
+                timeout=(30, 300),
+            ) as response:
+                response.raise_for_status()
+
+                # Se o servidor ignorar Range e devolver 200, recomeça para não duplicar bytes.
+                resume = existing > 0 and response.status_code == 206
+                mode = "ab" if resume else "wb"
+                with open(partial, mode) as handle:
+                    for chunk in response.iter_content(chunk_size=chunk_size):
+                        if chunk:
+                            handle.write(chunk)
+
+            partial.replace(destination)
+            return destination
+        except (requests.RequestException, OSError) as exc:
+            last_error = exc
+            if attempt >= attempts:
+                break
+            time.sleep(min(2 ** (attempt - 1), 16))
+
+    raise RuntimeError(f"Falha ao baixar {url} após {attempts} tentativas") from last_error
 
 
 class TempDownload:
@@ -94,7 +195,7 @@ class TempDownload:
 
     def __enter__(self) -> Path:
         self._dir = Path(tempfile.mkdtemp(prefix="rfb_", dir=self.tmp_root))
-        self.path = download(self.url, self._dir / Path(self.url).name)
+        self.path = download(self.url, self._dir / unquote(Path(self.url).name))
         return self.path
 
     def __exit__(self, exc_type, exc, tb):
