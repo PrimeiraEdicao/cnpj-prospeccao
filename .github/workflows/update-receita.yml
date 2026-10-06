@@ -1,0 +1,51 @@
+name: Atualizar base Receita CNPJ
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 09:00 UTC = 06:00 no horário de Brasília. Janeiro e julho = intervalo semestral real.
+    - cron: "0 9 10 1,7 *"
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Atualizar base filtrada
+        env:
+          TARGET_UF: MG
+          TARGET_MUNICIPIO_CODE: "4553"
+          CSV_CHUNK_SIZE: "250000"
+        run: python -m src.etl --output data/companies.parquet
+
+      - name: Commit da nova competência
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/companies.parquet data/release.json
+          if git diff --cached --quiet; then
+            echo "Sem mudança na base."
+            exit 0
+          fi
+          REL=$(python - <<'PY'
+          import json
+          print(json.load(open('data/release.json'))['receita_release'])
+          PY
+          )
+          git commit -m "data: atualizar CNPJ Receita ${REL}"
+          git push

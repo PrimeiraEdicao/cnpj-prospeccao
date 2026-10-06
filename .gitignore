@@ -1,0 +1,15 @@
+__pycache__/
+.pytest_cache/
+.venv/
+.env
+*.pyc
+*.pyo
+*.log
+*.zip
+raw/
+tmp/
+data/contact_state.db
+data/*.db-journal
+# O parquet pode ser versionado em repositório privado se couber no limite do GitHub.
+# Descomente a linha abaixo se preferir mantê-lo fora do Git.
+# data/companies.parquet
