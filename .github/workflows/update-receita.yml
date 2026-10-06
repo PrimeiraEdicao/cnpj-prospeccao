@@ -5,26 +5,66 @@ on:
   schedule:
     # 09:00 UTC = 06:00 no horário de Brasília. Janeiro e julho = intervalo semestral real.
     - cron: "0 9 10 1,7 *"
+  push:
+    branches: [main]
+    paths:
+      - "src/receita.py"
+      - "tests/test_receita.py"
+      - ".github/workflows/update-receita.yml"
 
 permissions:
   contents: write
 
 jobs:
-  update:
+  validar-fonte:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 330
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Instalar dependências
         run: pip install -r requirements.txt
+
+      - name: Rodar testes
+        run: python -m pytest -q
+
+      - name: Validar acesso à fonte oficial da Receita
+        run: |
+          python - <<'PY'
+          from src.receita import list_zip_urls, resolve_release
+
+          release = resolve_release()
+          files = list_zip_urls(release)
+          print(f"Competência detectada: {release.name}")
+          print(f"Arquivos ZIP detectados: {len(files)}")
+          if not files:
+              raise SystemExit("Nenhum ZIP foi encontrado no compartilhamento oficial da Receita.")
+          PY
+
+  update:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Rodar testes
+        run: python -m pytest -q
 
       - name: Atualizar base filtrada
         env:
