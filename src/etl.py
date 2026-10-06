@@ -22,7 +22,7 @@ from .constants import (
     SITUACAO_ATIVA,
     SOCIO_COLS,
 )
-from .receita import TempDownload, list_zip_urls, resolve_release, select_files
+from .receita import TempDownload, list_zip_urls, resolve_release, select_files, validate_zip_catalog
 from .utils import (
     cnpj_full,
     first_name,
@@ -298,6 +298,7 @@ def run_etl(
     release = resolve_release(release_name)
     print(f"Competência selecionada: {release.name}")
     urls = list_zip_urls(release)
+    catalog = validate_zip_catalog(urls)
     print(f"ZIPs publicados encontrados: {len(urls)}")
 
     estab = collect_establishments(urls, uf, municipio_code, chunksize)
@@ -326,6 +327,8 @@ def run_etl(
     final.to_parquet(output, index=False)
     meta = {
         "receita_release": release.name,
+        "catalog_url": release.url,
+        "zip_catalog": catalog,
         "uf": uf.upper(),
         "municipio_code": normalize_code(municipio_code),
         "rows": int(len(final)),

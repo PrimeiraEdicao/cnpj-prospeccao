@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from datetime import date
+from calendar import monthrange
 from pathlib import Path
 
 
@@ -63,7 +64,14 @@ def age_years(opening_date, today: date | None = None) -> float | None:
         return None
     today = today or date.today()
     d = pd.Timestamp(opening_date).date()
-    return (today - d).days / 365.2425
+    def anniversary(year):
+        return date(year, d.month, min(d.day, monthrange(year, d.month)[1]))
+    years = today.year - d.year
+    if today < anniversary(today.year):
+        years -= 1
+    previous = anniversary(d.year + years)
+    following = anniversary(d.year + years + 1)
+    return years + (today - previous).days / (following - previous).days
 
 
 def load_cnae_exclusions(path: str | Path) -> set[str]:

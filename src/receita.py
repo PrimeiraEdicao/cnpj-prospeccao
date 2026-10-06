@@ -5,15 +5,19 @@ import re
 import shutil
 import tempfile
 import time
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote, unquote, urljoin
+from urllib.parse import quote, unquote, urljoin, urlparse
 from xml.etree import ElementTree
 
 import requests
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+load_dotenv()
 
 # Desde 2026, a Receita publica o CNPJ em um compartilhamento público Nextcloud/WebDAV.
 # O token abaixo é o compartilhamento oficial atualmente divulgado no catálogo do CNPJ.
@@ -197,10 +201,33 @@ def list_zip_urls(release: Release) -> list[str]:
 
 def select_files(urls: list[str], token: str) -> list[str]:
     token_lower = token.lower()
-    return [u for u in urls if token_lower in unquote(Path(u).name).lower()]
+    return [u for u in urls if token_lower in unquote(Path(urlparse(u).path).name).lower()]
 
 
-def download(
+def validate_zip_catalog(urls: list[str]) -> dict[str, int]:
+    """Impede publicar um recorte incompleto como se as raízes ausentes não fossem MEI."""
+    counts = {}
+    for token in ("Estabelecimentos", "Empresas", "Socios"):
+        files = select_files(urls, token)
+        indexes = {
+            int(match.group(1))
+            for url in files
+            if (match := re.fullmatch(
+                rf"{token}(\d+)\.zip", unquote(Path(urlparse(url).path).name), re.I
+            ))
+        }
+        if indexes != set(range(10)) or len(files) != 10:
+            raise RuntimeError(f"Catálogo incompleto: esperados {token}0.zip a {token}9.zip.")
+        counts[token] = len(files)
+    for token in ("Simples", "Cnaes", "Qualificacoes"):
+        files = select_files(urls, token)
+        if len(files) != 1:
+            raise RuntimeError(f"Catálogo incompleto: esperado um arquivo {token}.zip.")
+        counts[token] = len(files)
+    return counts
+
+
+def _download_file(
     url: str,
     destination: str | Path,
     chunk_size: int = 2**20,
@@ -210,11 +237,13 @@ def download(
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     partial = destination.with_suffix(destination.suffix + ".part")
+    if attempts < 1:
+        raise ValueError("attempts precisa ser positivo")
 
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
         existing = partial.stat().st_size if partial.exists() else 0
-        headers: dict[str, str] = {}
+        headers: dict[str, str] = {"Accept-Encoding": "identity"}
         if existing:
             headers["Range"] = f"bytes={existing}-"
 
@@ -229,11 +258,28 @@ def download(
 
                 # Se o servidor ignorar Range e devolver 200, recomeça para não duplicar bytes.
                 resume = existing > 0 and response.status_code == 206
+                if response.status_code == 206:
+                    content_range = re.fullmatch(
+                        r"bytes (\d+)-(\d+)/(\d+)", response.headers.get("Content-Range", "")
+                    )
+                    if not content_range or int(content_range.group(1)) != existing:
+                        partial.unlink(missing_ok=True)
+                        raise OSError("Content-Range incompatível com a retomada")
+                    expected_total = int(content_range.group(3))
+                else:
+                    length = response.headers.get("Content-Length")
+                    expected_total = int(length) if length is not None else None
                 mode = "ab" if resume else "wb"
                 with open(partial, mode) as handle:
                     for chunk in response.iter_content(chunk_size=chunk_size):
                         if chunk:
                             handle.write(chunk)
+
+            if expected_total is not None and partial.stat().st_size != expected_total:
+                raise OSError("Download incompleto: tamanho diferente do anunciado pelo servidor")
+            if urlparse(url).path.lower().endswith(".zip") and not zipfile.is_zipfile(partial):
+                partial.unlink(missing_ok=True)
+                raise OSError("A resposta não contém um ZIP íntegro (pode ser uma página de erro)")
 
             partial.replace(destination)
             return destination
@@ -244,6 +290,39 @@ def download(
             time.sleep(min(2 ** (attempt - 1), 16))
 
     raise RuntimeError(f"Falha ao baixar {url} após {attempts} tentativas") from last_error
+
+
+def download(
+    url: str,
+    destination: str | Path,
+    chunk_size: int = 2**20,
+    attempts: int = 3,
+) -> Path:
+    """Mantém a Receita como origem primária e recupera o ZIP no espelho da mesma competência."""
+    try:
+        return _download_file(url, destination, chunk_size, attempts)
+    except RuntimeError:
+        official_prefix = DIRECT_FILES_ROOT_URL + "/"
+        if not url.startswith(official_prefix):
+            raise
+        relative = url[len(official_prefix):].split("/")
+        if len(relative) != 2 or not re.fullmatch(r"20\d{2}-\d{2}", relative[0]):
+            raise
+        mirror = _mirror_release_for_month(relative[0])
+        if mirror is None:
+            raise
+        filename = unquote(relative[1])
+        candidates = [
+            candidate for candidate in _list_mirror_zip_urls(mirror)
+            if unquote(Path(urlparse(candidate).path).name) == filename
+        ]
+        if len(candidates) != 1:
+            raise RuntimeError(f"ZIP {filename} ausente ou ambíguo no espelho de {mirror.name}")
+        # Não mistura bytes de dois servidores, mesmo quando o nome do ZIP é idêntico.
+        destination = Path(destination)
+        destination.with_suffix(destination.suffix + ".part").unlink(missing_ok=True)
+        print(f"Download oficial falhou; contingência {mirror.name}: {filename}", flush=True)
+        return _download_file(candidates[0], destination, chunk_size, attempts)
 
 
 class TempDownload:
@@ -257,8 +336,13 @@ class TempDownload:
 
     def __enter__(self) -> Path:
         self._dir = Path(tempfile.mkdtemp(prefix="rfb_", dir=self.tmp_root))
-        self.path = download(self.url, self._dir / unquote(Path(self.url).name))
-        return self.path
+        try:
+            self.path = download(self.url, self._dir / unquote(Path(urlparse(self.url).path).name))
+            return self.path
+        except BaseException:
+            # __exit__ não é chamado quando __enter__ falha.
+            shutil.rmtree(self._dir, ignore_errors=True)
+            raise
 
     def __exit__(self, exc_type, exc, tb):
         if self._dir and self._dir.exists():

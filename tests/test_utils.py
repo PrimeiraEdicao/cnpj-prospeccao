@@ -20,3 +20,11 @@ def test_accounting_cnae():
 def test_phone_br():
     assert phone_br("33", "999991234") == "5533999991234"
     assert phone_br("33", "33331234") == "553333331234"
+
+
+def test_age_changes_on_exact_calendar_anniversary():
+    from datetime import date
+    from src.utils import age_years
+    assert age_years(date(2025, 10, 6), date(2026, 10, 5)) < 1
+    assert age_years(date(2025, 10, 6), date(2026, 10, 6)) == 1
+    assert age_years(date(2024, 2, 29), date(2025, 2, 28)) == 1

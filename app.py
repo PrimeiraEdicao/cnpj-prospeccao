@@ -5,17 +5,21 @@ import json
 import os
 import urllib.parse
 import uuid
-from datetime import date
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+from dotenv import load_dotenv
 
+from src.demo import demo_data
 from src.state import get_states, init_db, record_attempt
 from src.utils import age_years, normalize_text
 
 st.set_page_config(page_title="Prospecção CNPJ", layout="wide")
+load_dotenv()
 
 DATA_PATH = Path("data/companies.parquet")
 META_PATH = Path("data/release.json")
@@ -33,15 +37,15 @@ def _secret_or_env(name: str, default: str = "") -> str:
 if _secret_or_env("DATABASE_URL"):
     os.environ["DATABASE_URL"] = _secret_or_env("DATABASE_URL")
 
-engine = init_db()
+@st.cache_resource
+def contact_engine(database_url: str):
+    return init_db()
 
 
 @st.cache_data(show_spinner=False)
-def load_data(path: str) -> pd.DataFrame:
+def load_data(path: str, file_version: tuple[int, int]) -> pd.DataFrame:
     df = pd.read_parquet(path)
     df["data_abertura"] = pd.to_datetime(df["data_abertura"], errors="coerce")
-    today = pd.Timestamp(date.today())
-    df["idade_anos"] = (today - df["data_abertura"]).dt.days / 365.2425
     return df
 
 
@@ -70,7 +74,8 @@ def handle_contact_redirect(df: pd.DataFrame):
         st.error("Telefone não corresponde ao CNPJ na base local. O contato não foi registrado.")
         return True
 
-    message = urllib.parse.unquote(str(msg))
+    # st.query_params já decodifica urlencode; unquote de novo corrompe textos como %20.
+    message = str(msg)
     record_attempt(
         attempt_id=str(attempt_id),
         cnpj=str(cnpj),
@@ -92,17 +97,23 @@ def handle_contact_redirect(df: pd.DataFrame):
 
 st.title("Prospecção de empresas — CNPJ público")
 
-if not DATA_PATH.exists():
-    st.error("Base ainda não gerada. Execute `python -m src.etl` antes de abrir o app.")
-    st.stop()
+demo_mode = not DATA_PATH.exists()
+today = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+if demo_mode:
+    st.info("Demonstração com empresas fictícias. A base real ainda está sendo preparada; os contatos estão desativados.")
+    df = demo_data(today)
+else:
+    version = DATA_PATH.stat()
+    df = load_data(str(DATA_PATH), (version.st_mtime_ns, version.st_size))
+    engine = contact_engine(_secret_or_env("DATABASE_URL", "sqlite:///data/contact_state.db"))
 
-df = load_data(str(DATA_PATH))
+df["idade_anos"] = df["data_abertura"].map(lambda opening: age_years(opening, today))
 
-if handle_contact_redirect(df):
+if not demo_mode and handle_contact_redirect(df):
     st.stop()
 
 meta = {}
-if META_PATH.exists():
+if not demo_mode and META_PATH.exists():
     try:
         meta = json.loads(META_PATH.read_text(encoding="utf-8"))
     except Exception:
@@ -114,7 +125,9 @@ if meta:
         f"{meta.get('rows', len(df)):,} estabelecimentos não-MEI no escopo"
     )
 
-states = pd.DataFrame(get_states(df["cnpj"].astype(str).tolist(), engine=engine))
+if not demo_mode:
+    st.button("Atualizar histórico", help="Recarrega as tentativas registradas em outras abas.")
+states = pd.DataFrame() if demo_mode else pd.DataFrame(get_states(df["cnpj"].astype(str).tolist(), engine=engine))
 if not states.empty:
     df = df.merge(states, on="cnpj", how="left")
 else:
@@ -233,6 +246,11 @@ try:
 except Exception:
     message = template
 st.code(message, language=None)
+
+if demo_mode:
+    st.button("Abrir WhatsApp e registrar tentativa", disabled=True)
+    st.caption("A demonstração permite testar filtros e mensagens sem registrar contatos.")
+    st.stop()
 
 phones = []
 if row.get("whatsapp_1"):

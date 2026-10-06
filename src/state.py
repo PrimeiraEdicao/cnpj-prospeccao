@@ -13,6 +13,11 @@ def _database_url() -> str:
 
 def get_engine():
     url = _database_url()
+    # URLs padrão de Supabase/Neon precisam usar o driver psycopg 3 instalado.
+    if url.startswith("postgres://"):
+        url = "postgresql+psycopg://" + url.removeprefix("postgres://")
+    elif url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url.removeprefix("postgresql://")
     if url.startswith("sqlite:///"):
         path = Path(url.removeprefix("sqlite:///"))
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,15 +63,10 @@ def record_attempt(
     engine = engine or init_db()
     now = datetime.now(timezone.utc).isoformat()
     with engine.begin() as conn:
-        exists = conn.execute(
-            text("SELECT 1 FROM contact_attempts WHERE attempt_id = :attempt_id"),
-            {"attempt_id": attempt_id},
-        ).first()
-        if exists:
-            return False
-        conn.execute(text("""
+        result = conn.execute(text("""
             INSERT INTO contact_attempts(attempt_id, cnpj, phone, contact_name, message, attempted_at)
             VALUES (:attempt_id, :cnpj, :phone, :contact_name, :message, :attempted_at)
+            ON CONFLICT (attempt_id) DO NOTHING
         """), {
             "attempt_id": attempt_id,
             "cnpj": cnpj,
@@ -75,36 +75,19 @@ def record_attempt(
             "message": message,
             "attempted_at": now,
         })
-        row = conn.execute(
-            text("SELECT attempt_count, first_attempt_at FROM company_contact_state WHERE cnpj = :cnpj"),
-            {"cnpj": cnpj},
-        ).mappings().first()
-        if row:
-            conn.execute(text("""
-                UPDATE company_contact_state
-                SET attempt_count = :count,
-                    last_attempt_at = :now,
-                    last_phone = :phone,
-                    last_contact_name = :contact_name
-                WHERE cnpj = :cnpj
-            """), {
-                "count": int(row["attempt_count"]) + 1,
-                "now": now,
-                "phone": phone,
-                "contact_name": contact_name,
-                "cnpj": cnpj,
-            })
-        else:
-            conn.execute(text("""
-                INSERT INTO company_contact_state(
-                    cnpj, attempt_count, first_attempt_at, last_attempt_at, last_phone, last_contact_name
-                ) VALUES (:cnpj, 1, :now, :now, :phone, :contact_name)
-            """), {
-                "cnpj": cnpj,
-                "now": now,
-                "phone": phone,
-                "contact_name": contact_name,
-            })
+        if result.rowcount == 0:
+            return False
+        # Incremento atômico: abas concorrentes não perdem tentativas nem duplicam o mesmo clique.
+        conn.execute(text("""
+            INSERT INTO company_contact_state(
+                cnpj, attempt_count, first_attempt_at, last_attempt_at, last_phone, last_contact_name
+            ) VALUES (:cnpj, 1, :now, :now, :phone, :contact_name)
+            ON CONFLICT (cnpj) DO UPDATE SET
+                attempt_count = company_contact_state.attempt_count + 1,
+                last_attempt_at = excluded.last_attempt_at,
+                last_phone = excluded.last_phone,
+                last_contact_name = excluded.last_contact_name
+        """), {"cnpj": cnpj, "now": now, "phone": phone, "contact_name": contact_name})
     return True
 
 

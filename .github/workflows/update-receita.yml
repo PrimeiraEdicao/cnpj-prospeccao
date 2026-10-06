@@ -3,77 +3,104 @@ name: Atualizar base Receita CNPJ
 on:
   workflow_dispatch:
   schedule:
-    # 09:00 UTC = 06:00 no horário de Brasília. Janeiro e julho = intervalo semestral real.
+    # 09:00 UTC = 06:00 em Brasília. Atualização semestral.
     - cron: "0 9 10 1,7 *"
   push:
     branches: [main]
     paths:
-      - "src/receita.py"
-      - "tests/test_receita.py"
+      - "src/**"
+      - "tests/**"
+      - "app.py"
+      - "requirements.txt"
+      - ".github/workflows/update-receita.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "app.py"
+      - "requirements.txt"
       - ".github/workflows/update-receita.yml"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: receita-cnpj-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
 
 jobs:
-  validar-fonte:
-    if: github.event_name == 'push'
+  testes:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-
       - name: Instalar dependências
         run: pip install -r requirements.txt
-
-      - name: Rodar testes
+      - name: Rodar testes de regressão e interface
         run: python -m pytest -q
 
-      - name: Validar acesso à fonte oficial da Receita
-        run: |
-          python - <<'PY'
-          from src.receita import list_zip_urls, resolve_release
-
-          release = resolve_release()
-          files = list_zip_urls(release)
-          print(f"Competência detectada: {release.name}")
-          print(f"Arquivos ZIP detectados: {len(files)}")
-          if not files:
-              raise SystemExit("Nenhum ZIP foi encontrado no compartilhamento oficial da Receita.")
-          PY
+  validar-fonte:
+    needs: testes
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+      - name: Validar catálogo e download real (Receita ou contingência)
+        run: python -m src.smoke
 
   update:
-    if: github.event_name != 'push'
+    needs: validar-fonte
     runs-on: ubuntu-latest
     timeout-minutes: 330
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
+      - name: Verificar necessidade da carga
+        id: carga
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = "push" ] && [ -f data/companies.parquet ]; then
+            echo "executar=false" >> "$GITHUB_OUTPUT"
+            echo "Base já existente: push valida o código sem refazer o ETL nacional."
+          else
+            echo "executar=true" >> "$GITHUB_OUTPUT"
+            echo "Iniciando primeira carga ou atualização solicitada/agendada."
+          fi
       - uses: actions/setup-python@v7
+        if: steps.carga.outputs.executar == 'true'
         with:
           python-version: "3.12"
           cache: pip
-
       - name: Instalar dependências
+        if: steps.carga.outputs.executar == 'true'
         run: pip install -r requirements.txt
-
-      - name: Rodar testes
-        run: python -m pytest -q
-
       - name: Atualizar base filtrada
+        if: steps.carga.outputs.executar == 'true'
         env:
           TARGET_UF: MG
           TARGET_MUNICIPIO_CODE: "4553"
-          CSV_CHUNK_SIZE: "250000"
+          CSV_CHUNK_SIZE: "100000"
         run: python -m src.etl --output data/companies.parquet
-
       - name: Commit da nova competência
+        if: steps.carga.outputs.executar == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -88,4 +115,5 @@ jobs:
           PY
           )
           git commit -m "data: atualizar CNPJ Receita ${REL}"
-          git push
+          git pull --rebase origin main
+          git push origin HEAD:main

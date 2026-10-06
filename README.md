@@ -16,7 +16,7 @@ Não use `natureza_juridica == 2135` como sinônimo de MEI: `213-5` identifica *
 
 ## O que o pipeline faz
 
-1. Descobre automaticamente a competência mais recente publicada pela Receita.
+1. Descobre automaticamente a competência mais recente pela Receita (WebDAV), com espelho público de contingência.
 2. Processa os ZIPs de **Estabelecimentos** em streaming e retém somente empresas ativas do município/UF configurados.
 3. Reconstrói o CNPJ de 14 dígitos (`básico + ordem + DV`).
 4. Faz join com **Simples** pelo CNPJ básico e remove MEI.
@@ -39,6 +39,18 @@ O ETL **não exclui empresas com menos de 1 ano**. O Streamlit calcula a idade d
 
 O workflow `.github/workflows/update-receita.yml` roda em **10 de janeiro e 10 de julho**, além de permitir execução manual (`workflow_dispatch`). Janeiro/julho é um intervalo efetivo de seis meses.
 
+A **primeira carga também começa automaticamente após um push de código para `main` enquanto `data/companies.parquet` estiver ausente**. Quando a base já existe, os pushes validam o código e a fonte sem refazer o processamento nacional. As atualizações completas continuam semestrais ou manuais.
+
+Os jobs aparecem separadamente no GitHub Actions:
+
+- `testes`: regressões do ETL, downloads, histórico e interface;
+- `validar-fonte`: lista a competência, verifica as partes obrigatórias e baixa/lê o ZIP pequeno de CNAEs;
+- `update`: baixa e processa o recorte real, depois publica Parquet e metadados.
+
+Um resultado verde em `validar-fonte` **não significa que a base real já está pronta**. Para isso, o passo `Atualizar base filtrada` e o commit dos dois arquivos precisam terminar com sucesso. O processamento completo lê dezenas de ZIPs nacionais e pode levar horas.
+
+**Não reexecute o run vermelho antigo para testar uma correção nova:** o botão de reexecução usa o commit original daquele run. Abra uma execução do novo commit ou use `Actions → Atualizar base Receita CNPJ → Run workflow` na branch `main`.
+
 O workflow:
 
 - verifica a competência mais recente publicada;
@@ -46,6 +58,8 @@ O workflow:
 - gera somente a base filtrada do município;
 - apaga temporários automaticamente;
 - versiona `companies.parquet` e `release.json`.
+
+Se um download oficial falhar, a contingência procura o **mesmo nome de ZIP na mesma competência** no espelho. Bytes parciais da origem anterior são descartados antes da troca. A carga rejeita ZIPs inválidos, tamanhos incompletos e catálogos sem todas as partes de Estabelecimentos, Empresas, Sócios ou Simples. A origem do catálogo fica registrada em `release.json`; o espelho é uma cópia pública de terceiros, não uma API oficial.
 
 > Recomendação: use repositório **privado** se for versionar a base final, pois ela contém contatos publicados no cadastro CNPJ e histórico operacional de prospecção.
 
@@ -64,6 +78,8 @@ python -m src.etl
 streamlit run app.py
 ```
 
+Para visualizar a interface imediatamente, basta instalar as dependências e executar `streamlit run app.py`. Quando a base real não existe, o app abre em **modo de demonstração**, com empresas fictícias, filtros e prévia da mensagem. Os contatos ficam desativados e o banco de histórico não é usado. Após a geração do Parquet, o app usa a base real automaticamente no próximo carregamento.
+
 ## Filtros disponíveis no app
 
 - idade mínima e máxima da empresa;
@@ -73,6 +89,8 @@ streamlit run app.py
 - somente celular provável;
 - nunca tentado / já tentado / todos;
 - busca textual por empresa, CNPJ ou CNAE.
+
+A idade usa aniversários de calendário (incluindo o tratamento de 29 de fevereiro), e é recalculada a cada interação no horário de Brasília. A substituição do Parquet invalida o cache. O botão **Atualizar histórico** recarrega tentativas abertas em outras abas.
 
 ## CNAEs de contabilidade
 
