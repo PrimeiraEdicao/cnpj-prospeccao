@@ -1,0 +1,19 @@
+{
+  "name": "Prospecção CNPJ — Python 3.12",
+  "image": "mcr.microsoft.com/devcontainers/python:3.2.0-3.12-bookworm",
+  "postCreateCommand": "bash scripts/run_app.sh --setup-only",
+  "forwardPorts": [8501],
+  "portsAttributes": {
+    "8501": {
+      "label": "Prospecção CNPJ (Streamlit)",
+      "onAutoForward": "openBrowser"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv-cnpj312/bin/python"
+      }
+    }
+  }
+}

@@ -13,6 +13,9 @@ on:
       - "app.py"
       - "requirements.txt"
       - ".github/workflows/update-receita.yml"
+      - "scripts/**"
+      - ".devcontainer/**"
+      - ".python-version"
   pull_request:
     paths:
       - "src/**"
@@ -20,6 +23,9 @@ on:
       - "app.py"
       - "requirements.txt"
       - ".github/workflows/update-receita.yml"
+      - "scripts/**"
+      - ".devcontainer/**"
+      - ".python-version"
 
 permissions:
   contents: read
@@ -41,10 +47,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Instalar dependências
-        run: pip install -r requirements.txt
+      - name: Preparar ambiente Python 3.12 do app
+        run: bash scripts/run_app.sh --setup-only
       - name: Rodar testes de regressão e interface
-        run: python -m pytest -q
+        run: .venv-cnpj312/bin/python -m pytest -q
 
   validar-fonte:
     needs: testes

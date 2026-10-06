@@ -65,6 +65,8 @@ Se um download oficial falhar, a contingência procura o **mesmo nome de ZIP na 
 
 ## Instalação local
 
+Use **Python 3.12**, a mesma versão validada no GitHub Actions. O limite atual `pyarrow<20` não oferece wheel para Python 3.14; nesse Python o pip tenta compilar Arrow/C++ e a instalação falha.
+
 ```bash
 python -m venv .venv
 # Windows
@@ -79,6 +81,21 @@ streamlit run app.py
 ```
 
 Para visualizar a interface imediatamente, basta instalar as dependências e executar `streamlit run app.py`. Quando a base real não existe, o app abre em **modo de demonstração**, com empresas fictícias, filtros e prévia da mensagem. Os contatos ficam desativados e o banco de histórico não é usado. Após a geração do Parquet, o app usa a base real automaticamente no próximo carregamento.
+
+## Abrir no GitHub Codespaces
+
+No repositório, abra **Code → Codespaces → Create codespace on main**. Os novos ambientes usam Python 3.12 através de `.devcontainer/devcontainer.json`.
+
+No terminal do Codespaces, execute:
+
+```bash
+git pull origin main
+bash scripts/run_app.sh
+```
+
+O script instala as dependências em `.venv-cnpj312` e abre o Streamlit na porta 8501. Se um Codespace antigo ainda usar Python 3.14, ele obtém Python 3.12 com `uv` quando necessário, sem exigir reconstrução do ambiente. Isso também evita instalar pacotes no Python global.
+
+Na aba **Ports**, abra a porta **8501** no navegador. Para encerrar, pressione `Ctrl+C` no terminal. Para instalar sem iniciar a interface, use `bash scripts/run_app.sh --setup-only`.
 
 ## Filtros disponíveis no app
 
