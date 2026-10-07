@@ -190,7 +190,30 @@ A busca aceita CNPJ completo com pontuação (`12.345.678/0001-90`) ou apenas os
 
 O app usa os SVGs oficiais de [PrimeiraEdicao/alphalab-site](https://github.com/PrimeiraEdicao/alphalab-site), preservados sem alteração. Azul-marinho `#0F2D5B`, azul de apoio `#315FC3`, destaque `#4F8CFF`, fundo `#F6F8FC` e divisórias `#E0E7F1`. O tema está em `.streamlit/config.toml`; os ativos ficam em `assets/` e não dependem de um site externo para carregar.
 
-### Persistência
+## Empresas já contatadas ou descartadas
+
+A lista `config/reviewed_cnpjs.csv` contém os **1.544 CNPJs únicos** das 50 planilhas enviadas em `Empresas filtradas.zip`: 1.634 linhas válidas e 90 repetições, sem CNPJs inválidos. Como as planilhas não distinguem contato de descarte, o lote está marcado como **Revisado anteriormente — contato ou descarte**. O TXT de memória contém telefones e não foi interpretado como CNPJ. A lista versiona somente CNPJ, motivo e arquivo de origem; nomes, telefones e e-mails das planilhas não são publicados.
+
+**Ocultar empresas já revisadas** vem ativado por padrão, independentemente do filtro de histórico. A base da Receita é preservada: a lista é aplicada por CNPJ completo de 14 dígitos a cada carregamento, inclusive quando uma empresa ausente aparece numa nova competência ou uma nova cidade é incluída. Desmarque a opção para consultar esses registros, respeitando os demais filtros. Links de contato ficam desativados, a fila remove empresas revisadas e links antigos não registram abertura nem redirecionam para o WhatsApp.
+
+Para novas listas, abra **Importar empresas já revisadas** na barra lateral. Envie ZIP com planilhas, Excel `.xlsx`, CSV com coluna `CNPJ` ou TXT com um CNPJ por linha. Confira os totais e selecione **Revisado anteriormente**, **Já contatado** ou **Fora do perfil**, conforme o lote. Clique em **Importar CNPJs revisados**. Os dígitos verificadores são validados; duplicatas não criam novos registros. A importação não altera o número de aberturas nem inventa mensagem, telefone ou data de envio. A data salva corresponde à importação da revisão.
+
+Novas importações feitas na interface ficam na tabela `company_reviews` do banco definido por `DATABASE_URL`. Use **Baixar lista de revisão** para guardar um CSV de backup com a união da lista versionada e das novas importações. Esse CSV pode ser reimportado sem perder o motivo de revisão. Em hospedagem com disco temporário, configure PostgreSQL persistente; uploads não fazem commits automáticos no GitHub.
+
+Para incorporar uma nova lista ao próprio repositório, sem depender do banco de contatos:
+
+```bash
+python -m scripts.import_reviews "caminho/lista.zip"
+# Quando o lote inteiro representa empresas fora do perfil:
+python -m scripts.import_reviews "caminho/lista.xlsx" --status fora_perfil
+git add config/reviewed_cnpjs.csv
+git commit -m "Atualizar empresas já revisadas"
+git push
+```
+
+Importar novamente preserva os motivos de registros anteriores. A lista usa CNPJ completo; outra filial da mesma raiz não é automaticamente excluída.
+
+## Persistência do banco de contatos
 
 Localmente, o padrão é SQLite:
 

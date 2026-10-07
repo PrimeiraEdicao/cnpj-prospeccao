@@ -6,6 +6,7 @@ import json
 import math
 import os
 import urllib.parse
+import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -17,7 +18,9 @@ from src.demo import demo_data
 from src.prospecting import (DEFAULT_TEMPLATE, EXCLUSIONS, PORTE_LABELS, cnpj_query, contact_link,
                              filter_data, greeting, now_local, preferred_phone,
                              prepare_data, render_message)
-from src.state import get_states, init_db, record_attempt
+from src.reviews import (REVIEW_LABELS, apply_reviews, combine_reviews, export_reviews,
+                         load_review_registry, parse_review_files)
+from src.state import get_reviews, get_states, import_reviews, init_db, record_attempt
 from src.theme import theme_css
 from src.utils import age_years, digits, normalize_text
 
@@ -26,6 +29,7 @@ st.set_page_config(page_title="AlphaLab | Prospecção", page_icon=str(ROOT / "a
 load_dotenv()
 DATA_PATH = Path("data/companies.parquet")
 META_PATH = Path("data/release.json")
+REVIEW_PATH = ROOT / "config/reviewed_cnpjs.csv"
 
 
 def _secret_or_env(name: str, default: str = "") -> str:
@@ -61,6 +65,9 @@ def handle_contact_redirect(df: pd.DataFrame, engine):
     valid = df[df["cnpj"].astype(str) == str(cnpj)]
     if valid.empty:
         st.error("CNPJ não encontrado na base local. O contato não foi registrado.")
+        return True
+    if bool(valid.iloc[0].get("reviewed", False)):
+        st.warning("Esta empresa está na lista de revisão e não deve receber nova abordagem. Nenhuma tentativa foi registrada.")
         return True
     allowed = {normalize_text(valid.iloc[0].get(f"whatsapp_{i}")) for i in (1, 2)} - {""}
     if str(phone) not in allowed:
@@ -99,6 +106,8 @@ def render_table(page: pd.DataFrame, template: str, sender: str, salutation: str
             action_link(contact_link(row, phone, template, sender, salutation=salutation),
                         "WhatsApp" if len(phones) == 1 else f"WhatsApp {i}")
             for i, phone in enumerate(phones, 1)) or '<span class="muted">Sem telefone</span>'
+        if row.get("reviewed", False):
+            actions = '<span class="muted">Revisado — não contatar</span>'
         company = html.escape(normalize_text(row.get("razao_social")))
         cnpj = html.escape(str(row["cnpj"]))
         name = html.escape(normalize_text(row.get("primeiro_nome")) or "Nome a revisar")
@@ -145,9 +154,11 @@ else:
     version = DATA_PATH.stat()
     df = load_data(str(DATA_PATH), (version.st_mtime_ns, version.st_size))
     engine = contact_engine(_secret_or_env("DATABASE_URL", "sqlite:///data/contact_state.db"))
-    if handle_contact_redirect(df, engine):
-        st.stop()
 df = prepare_data(df, meta)
+reviews = combine_reviews(load_review_registry(REVIEW_PATH), [] if demo_mode else get_reviews(engine))
+df = apply_reviews(df, reviews)
+if not demo_mode and handle_contact_redirect(df, engine):
+    st.stop()
 df["idade_anos"] = df["data_abertura"].map(lambda opening: age_years(opening, today))
 if meta and not demo_mode:
     st.caption(f"Receita Federal · {meta.get('receita_release', '—')} · {len(df):,} estabelecimentos ativos não-MEI na base")
@@ -163,6 +174,37 @@ df["attempt_count"] = pd.to_numeric(df["attempt_count"], errors="coerce").fillna
 
 with st.sidebar:
     st.image(str(logo_path), width=155)
+    with st.expander("Importar empresas já revisadas"):
+        st.caption("Oculta empresas já contatadas ou descartadas, sem registrar mensagens enviadas. Aceita ZIP, Excel (.xlsx), CSV e TXT com CNPJ.")
+        files = st.file_uploader("Listas de empresas", type=["zip", "xlsx", "csv", "txt"],
+                                 accept_multiple_files=True, disabled=demo_mode)
+        review_status = st.selectbox("Motivo da revisão", list(REVIEW_LABELS), format_func=REVIEW_LABELS.get,
+                                     disabled=demo_mode)
+        if result := st.session_state.pop("review_import_result", None):
+            st.success(result)
+        if files and not demo_mode:
+            try:
+                report = parse_review_files([(f.name, f.getvalue()) for f in files], review_status)
+                st.write(f"{len(report.records):,} CNPJs únicos · {report.duplicates:,} repetições · {report.invalid_rows:,} inválidos.")
+                if report.invalid_rows or report.blank_rows:
+                    st.warning(f"Ignorados: {report.invalid_rows} CNPJs inválidos e {report.blank_rows} células vazias.")
+                for ignored in report.ignored:
+                    st.caption(f"Ignorado: {ignored}")
+                if report.records:
+                    preview = pd.DataFrame(list(report.records.values())[:10])[["cnpj", "status"]]
+                    preview["status"] = preview["status"].map(REVIEW_LABELS)
+                    st.dataframe(preview, hide_index=True)
+                    if st.button("Importar CNPJs revisados"):
+                        added, existing = import_reviews(report.records.values(), engine)
+                        st.session_state["review_import_result"] = f"{added} novos registros salvos; {existing} já estavam importados. A lista acompanha as próximas cargas da Receita."
+                        st.rerun()
+                else:
+                    st.warning("Nenhum CNPJ válido encontrado. Use a coluna CNPJ ou uma lista de 14 dígitos.")
+            except (ValueError, zipfile.BadZipFile, OSError) as exc:
+                st.error(f"Não foi possível importar: {exc}")
+        st.download_button("Baixar lista de revisão", export_reviews(reviews), "cnpjs_revisados.csv",
+                           "text/csv", disabled=demo_mode or not reviews)
+        st.caption("Novas importações são salvas no banco de contatos. Guarde o CSV como backup. Na hospedagem, use um banco persistente.")
     st.subheader("Seu público")
     cities = sorted(df["cidade_label"].unique())
     city_sel = st.multiselect("Cidade / UF", cities, help="Sem seleção: todas as cidades já carregadas.")
@@ -183,6 +225,8 @@ with st.sidebar:
     only_phone = st.checkbox("Somente com telefone", value=True)
     only_mobile = st.checkbox("Somente celular provável", value=False)
     contact_status = st.selectbox("Histórico de contato", ["Nunca tentado", "Todos", "Já tentado"])
+    hide_reviewed = st.checkbox("Ocultar empresas já revisadas", value=True)
+    st.caption(f"Lista de revisão: {len(reviews):,} CNPJs; {int(df['reviewed'].sum()):,} presentes nesta base. Ao exibir, os links de contato continuam desativados.")
     search = st.text_input("Buscar empresa/CNPJ/CNAE", placeholder="Nome, CNPJ ou atividade")
     st.caption("CNPJ aceito: 12.345.678/0001-90 ou 12345678000190 (14 dígitos). A busca respeita os filtros selecionados.")
     with st.expander("Como incluir outra cidade"):
@@ -192,7 +236,11 @@ with st.sidebar:
 filtered = filter_data(df, cities=city_sel, neighborhoods=bairro_sel, portes=portes, exclusions=exclusions,
                        exclude_accounting=exclude_accounting, min_age=min_age,
                        max_age=max_age if max_age_enabled else None, only_phone=only_phone,
-                       only_mobile=only_mobile, contact_status=contact_status, search=search)
+                       only_mobile=only_mobile, contact_status=contact_status, search=search,
+                       hide_reviewed=hide_reviewed)
+# Retira também contatos revisados de filas abertas antes da importação.
+eligible_contacts = set(filtered.loc[~filtered["reviewed"], "cnpj"].astype(str))
+st.session_state["contact_queue"] = [n for n in st.session_state.get("contact_queue", []) if n in eligible_contacts]
 c1, c2, c3 = st.columns(3)
 c1.metric("Empresas no filtro", f"{len(filtered):,}")
 c2.metric("Bairros no filtro", str(filtered["bairro_key"].nunique()))
@@ -220,7 +268,10 @@ st.subheader("Empresas para contato")
 st.caption("Os links ficam na primeira coluna e reutilizam a mesma aba do WhatsApp. Confira a mensagem antes de enviar.")
 if filtered.empty:
     searched_cnpj = cnpj_query(search)
-    if searched_cnpj and df["cnpj"].map(digits).eq(searched_cnpj).any():
+    reviewed_match = df[df["cnpj"].map(digits).eq(searched_cnpj)] if searched_cnpj else pd.DataFrame()
+    if not reviewed_match.empty and reviewed_match["reviewed"].any():
+        st.info("Este CNPJ está marcado como revisado anteriormente e foi retirado da prospecção. Para consultar, desmarque ‘Ocultar empresas já revisadas’ e confira os demais filtros.")
+    elif searched_cnpj and df["cnpj"].map(digits).eq(searched_cnpj).any():
         st.info("CNPJ encontrado na base, mas oculto pelos filtros atuais. Confira cidade, bairro, porte, idade, atividades, telefone e histórico de contato.")
     elif searched_cnpj:
         st.info("Este CNPJ não consta na base carregada. A base contém estabelecimentos ativos não-MEI das cidades já carregadas.")
@@ -240,17 +291,17 @@ st.caption(f"Página {page_num} de {pages} · até {page_size} empresas por pág
 render_table(page, template, sender, salutation, demo_mode)
 
 with st.expander("Fila de contatos — organize vários de uma vez"):
-    labels = {str(r.cnpj): f"{r.razao_social} · {r.bairro} · {r.cnpj}" for r in page.itertuples()}
+    labels = {str(r.cnpj): f"{r.razao_social} · {r.bairro} · {r.cnpj}" for r in page.itertuples() if not r.reviewed}
     st.session_state["chosen_contacts"] = [x for x in st.session_state.get("chosen_contacts", []) if x in labels]
     selected = st.multiselect("Contatos desta página", list(labels), format_func=labels.get, key="chosen_contacts")
     a, b, c = st.columns(3)
     if a.button("Adicionar selecionados à fila", disabled=demo_mode or not selected):
         st.session_state["contact_queue"] = list(dict.fromkeys(st.session_state.get("contact_queue", []) + selected))
     if b.button("Adicionar esta página à fila", disabled=demo_mode):
-        st.session_state["contact_queue"] = list(dict.fromkeys(st.session_state.get("contact_queue", []) + page["cnpj"].astype(str).tolist()))
+        st.session_state["contact_queue"] = list(dict.fromkeys(st.session_state.get("contact_queue", []) + list(labels)))
     if c.button("Limpar fila", disabled=demo_mode):
         st.session_state["contact_queue"] = []
-    eligible = set(filtered["cnpj"].astype(str))
+    eligible = eligible_contacts
     queue = [cnpj for cnpj in st.session_state.get("contact_queue", []) if cnpj in eligible]
     st.session_state["contact_queue"] = queue
     if queue:
@@ -281,7 +332,9 @@ with st.expander("Revisar nome e telefone de uma empresa"):
     st.code(render_message(template, contact_name, sender, salutation), language=None)
     phones = list(dict.fromkeys(normalize_text(row.get(f"whatsapp_{i}")) for i in (1, 2)))
     phones = [phone for phone in phones if phone]
-    if demo_mode:
+    if row["reviewed"]:
+        st.info(f"{row['review_label']}. Este contato foi retirado da prospecção.")
+    elif demo_mode:
         st.button("Abrir WhatsApp e registrar tentativa", disabled=True)
     elif phones:
         phone = st.selectbox("Número", phones)

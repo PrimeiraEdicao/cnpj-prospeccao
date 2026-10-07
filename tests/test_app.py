@@ -177,3 +177,63 @@ def test_search_formats_and_explanation_for_cnpj_hidden_by_filters(tmp_path, mon
     next(w for w in at.text_input if w.label == 'Buscar empresa/CNPJ/CNAE').set_value('99.999.999/0001-99').run()
     assert any('não consta na base' in w.value for w in at.info)
     assert not at.exception
+
+
+def test_import_ui_persists_reviews_removes_queue_and_allows_read_only_inspection(tmp_path, monkeypatch):
+    import io
+    import streamlit as st
+    from src.state import get_reviews, get_states
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('DATABASE_URL', f"sqlite:///{tmp_path / 'state.db'}")
+    (tmp_path / 'data').mkdir()
+    data = demo_data(now_local().date())
+    data['cnpj'] = ['00000000000191', '11222333000181', '04252011000110', '99999999999999']
+    data.to_parquet(tmp_path / 'data/companies.parquet', index=False)
+    # AppTest não controla o uploader; injeta o mesmo contrato name/getvalue do UploadedFile.
+    class Uploaded(io.BytesIO):
+        name = 'revisados.csv'
+    uploaded = Uploaded(b'CNPJ\n00.000.000/0001-91\n')
+    monkeypatch.setattr(st, 'file_uploader', lambda *args, **kwargs: [uploaded])
+    at = AppTest.from_file(str(APP)).run(timeout=15)
+    assert not at.exception
+    next(b for b in at.button if b.label == 'Adicionar esta página à fila').click().run()
+    assert '00000000000191' in at.session_state['contact_queue']
+    next(b for b in at.button if b.label == 'Importar CNPJs revisados').click().run()
+    assert not at.exception
+    assert at.metric[0].value == '2'
+    assert '00000000000191' not in at.session_state['contact_queue']
+    assert get_reviews(init_db())[0]['status'] == 'revisado'
+    assert get_states(['00000000000191'], init_db()) == []
+    next(w for w in at.text_input if w.label == 'Buscar empresa/CNPJ/CNAE').set_value('00.000.000/0001-91').run()
+    assert any('marcado como revisado' in i.value for i in at.info)
+    next(w for w in at.checkbox if w.label == 'Ocultar empresas já revisadas').uncheck().run()
+    assert at.metric[0].value == '1'
+    table = next(m.value for m in at.markdown if 'class="prospect-table"' in m.value)
+    assert 'Revisado — não contatar' in table and 'href=' not in table
+    next(b for b in at.button if b.label == 'Adicionar esta página à fila').click().run()
+    assert at.session_state['contact_queue'] == []
+    assert not any('Abrir WhatsApp e registrar tentativa</a>' in m.value for m in at.markdown)
+    next(b for b in at.button if b.label == 'Importar CNPJs revisados').click().run()
+    assert len(get_reviews(init_db())) == 1
+    fresh = AppTest.from_file(str(APP)).run(timeout=15)
+    assert fresh.metric[0].value == '2'  # Continua oculto numa nova sessão.
+
+
+def test_versioned_reviews_apply_to_new_base_and_block_old_whatsapp_links(tmp_path, monkeypatch):
+    from src.reviews import load_review_registry
+    reviewed = load_review_registry(APP.parent / 'config/reviewed_cnpjs.csv')[0]['cnpj']
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('DATABASE_URL', f"sqlite:///{tmp_path / 'state.db'}")
+    (tmp_path / 'data').mkdir()
+    data = demo_data(now_local().date())
+    data['cnpj'] = [reviewed, '11222333000181', '04252011000110', '99999999999999']
+    data.to_parquet(tmp_path / 'data/companies.parquet', index=False)
+    at = AppTest.from_file(str(APP)).run(timeout=15)
+    assert not at.exception and at.metric[0].value == '2'
+    at.query_params.update({'contact': reviewed, 'attempt': 'old-link', 'phone': '5500000000000',
+                            'name': 'Maria', 'msg': 'Olá'})
+    at.run()
+    assert not at.exception
+    assert any('não deve receber nova abordagem' in w.value for w in at.warning)
+    assert get_states([reviewed], init_db()) == []
+    assert not at.get('link_button')

@@ -48,6 +48,14 @@ def init_db(engine=None):
                 last_contact_name VARCHAR(255)
             )
         """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS company_reviews (
+                cnpj VARCHAR(14) PRIMARY KEY,
+                status VARCHAR(20) NOT NULL,
+                source TEXT NOT NULL,
+                reviewed_at VARCHAR(40) NOT NULL
+            )
+        """))
     return engine
 
 
@@ -111,3 +119,32 @@ def get_states(cnpjs: list[str] | None = None, engine=None):
             ).mappings().all()
             all_rows.extend(rows)
     return [dict(r) for r in all_rows]
+
+
+def import_reviews(records, engine=None) -> tuple[int, int]:
+    """Persiste revisões sem inventar tentativas, telefones ou mensagens enviadas."""
+    from .reviews import REVIEW_LABELS, import_cnpj
+    records = list(records)
+    if any(import_cnpj(row.get("cnpj")) != row.get("cnpj") or row.get("status") not in REVIEW_LABELS
+           for row in records):
+        raise ValueError("A lista de revisão contém CNPJ ou motivo inválido.")
+    records = list({row["cnpj"]: row for row in records}.values())
+    engine = engine or init_db()
+    now = datetime.now(timezone.utc).isoformat()
+    inserted = 0
+    with engine.begin() as conn:
+        for row in records:
+            result = conn.execute(text("""
+                INSERT INTO company_reviews(cnpj, status, source, reviewed_at)
+                VALUES (:cnpj, :status, :source, :reviewed_at)
+                ON CONFLICT (cnpj) DO NOTHING
+            """), {"cnpj": row["cnpj"], "status": row["status"],
+                   "source": row.get("source", ""), "reviewed_at": now})
+            inserted += int(result.rowcount > 0)
+    return inserted, len(records) - inserted
+
+
+def get_reviews(engine=None):
+    engine = engine or init_db()
+    with engine.connect() as conn:
+        return [dict(row) for row in conn.execute(text("SELECT * FROM company_reviews")).mappings()]

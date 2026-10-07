@@ -115,8 +115,10 @@ def prepare_data(df: pd.DataFrame, meta: dict | None = None) -> pd.DataFrame:
 def filter_data(df: pd.DataFrame, *, cities=(), neighborhoods=(), portes=("01", "03"),
                 exclusions=tuple(EXCLUSIONS), exclude_accounting=True, min_age=1.0,
                 max_age=None, only_phone=True, only_mobile=False, contact_status="Nunca tentado",
-                search="") -> pd.DataFrame:
+                search="", hide_reviewed=True) -> pd.DataFrame:
     mask = df["idade_anos"].fillna(-1).ge(min_age)
+    if hide_reviewed and "reviewed" in df:
+        mask &= ~df["reviewed"].fillna(False).astype(bool)
     if max_age is not None:
         mask &= df["idade_anos"].fillna(float("inf")).le(max_age)
     if cities:
