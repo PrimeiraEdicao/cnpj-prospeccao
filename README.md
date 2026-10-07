@@ -184,6 +184,10 @@ Fonte: [política oficial de mensagens do WhatsApp Business](https://business.wh
 
 ## Identidade visual
 
+Use **Aparência → Claro / Escuro** no topo da barra lateral para alternar o tema. A escolha é mantida durante a sessão e preserva filtros, busca e fila. O modo escuro inclui campos, seletores, tabela, mensagens e a versão branca oficial do logo.
+
+A busca aceita CNPJ completo com pontuação (`12.345.678/0001-90`) ou apenas os 14 dígitos (`12345678000190`), inclusive zeros à esquerda. Nome e CNAE continuam disponíveis no mesmo campo. A busca respeita os filtros; se um CNPJ existir na base e estiver excluído por eles, o app informa isso em vez de indicar ausência na base.
+
 O app usa os SVGs oficiais de [PrimeiraEdicao/alphalab-site](https://github.com/PrimeiraEdicao/alphalab-site), preservados sem alteração. Azul-marinho `#0F2D5B`, azul de apoio `#315FC3`, destaque `#4F8CFF`, fundo `#F6F8FC` e divisórias `#E0E7F1`. O tema está em `.streamlit/config.toml`; os ativos ficam em `assets/` e não dependem de um site externo para carregar.
 
 ### Persistência

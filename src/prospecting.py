@@ -57,6 +57,15 @@ def neighborhood_key(value) -> str:
     return strip_accents(normalize_text(value)).upper() or "SEM BAIRRO INFORMADO"
 
 
+def cnpj_query(value: str) -> str | None:
+    """Identifica um CNPJ completo, preservando zeros à esquerda."""
+    value = value.strip()
+    if not re.fullmatch(r"[0-9\s./-]+", value):
+        return None
+    number = digits(value)
+    return number if len(number) == 14 else None
+
+
 def cnae_codes(principal, secondary) -> list[str]:
     return [digits(principal), *re.findall(r"\d{7}", normalize_text(secondary))]
 
@@ -131,10 +140,14 @@ def filter_data(df: pd.DataFrame, *, cities=(), neighborhoods=(), portes=("01", 
     elif contact_status == "Já tentado":
         mask &= attempted
     if search.strip():
-        needle = strip_accents(search).lower()
-        haystack = df[["razao_social", "nome_fantasia", "cnpj", "cnae_fiscal_principal",
-                       "cnae_principal_descricao"]].fillna("").astype(str).agg(" ".join, axis=1)
-        mask &= haystack.map(strip_accents).str.lower().str.contains(needle, regex=False)
+        number = cnpj_query(search)
+        if number:
+            mask &= df["cnpj"].map(digits).eq(number)
+        else:
+            needle = strip_accents(search.strip()).lower()
+            haystack = df[["razao_social", "nome_fantasia", "cnpj", "cnae_fiscal_principal",
+                           "cnae_principal_descricao"]].fillna("").astype(str).agg(" ".join, axis=1)
+            mask &= haystack.map(strip_accents).str.lower().str.contains(needle, regex=False)
     return df[mask].copy().reset_index(drop=True)
 
 

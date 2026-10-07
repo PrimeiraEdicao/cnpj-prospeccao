@@ -136,3 +136,44 @@ def test_contact_link_recomputes_greeting_at_click_time(tmp_path, monkeypatch):
     with init_db().connect() as conn:
         message = conn.execute(text('SELECT message FROM contact_attempts')).scalar_one()
     assert message.startswith('Boa tarde! Tudo bem?')
+
+
+def test_appearance_changes_to_dark_and_back_without_resetting_filters(tmp_path, monkeypatch):
+    from src.theme import PALETTES
+    monkeypatch.chdir(tmp_path)
+    at = AppTest.from_file(str(APP)).run(timeout=15)
+    next(w for w in at.multiselect if w.label == 'Bairro').set_value(['CENTRO']).run()
+    assert at.metric[0].value == '2'
+    next(w for w in at.radio if w.label == 'Aparência').set_value('Escuro').run()
+    assert not at.exception
+    assert at.metric[0].value == '2'
+    assert next(w for w in at.multiselect if w.label == 'Bairro').value == ['CENTRO']
+    css = next(m.value for m in at.markdown if '--al-bg:' in m.value)
+    assert f"--al-bg:{PALETTES['Escuro']['bg']}" in css
+    next(w for w in at.radio if w.label == 'Aparência').set_value('Claro').run()
+    assert not at.exception
+    assert at.metric[0].value == '2'
+    css = next(m.value for m in at.markdown if '--al-bg:' in m.value)
+    assert f"--al-bg:{PALETTES['Claro']['bg']}" in css
+
+
+def test_search_formats_and_explanation_for_cnpj_hidden_by_filters(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('DATABASE_URL', f"sqlite:///{tmp_path / 'state.db'}")
+    (tmp_path / 'data').mkdir()
+    data = demo_data(now_local().date())
+    data['cnpj'] = ['01234567000189', '98765432000110', '11222333000199', '00987654000111']
+    data.to_parquet(tmp_path / 'data/companies.parquet', index=False)
+    at = AppTest.from_file(str(APP)).run(timeout=15)
+    for query in ['01.234.567/0001-89', '01234567000189']:
+        next(w for w in at.text_input if w.label == 'Buscar empresa/CNPJ/CNAE').set_value(query).run()
+        assert not at.exception
+        assert at.metric[0].value == '1'
+        assert any('Loja Exemplo' in m.value for m in at.markdown if 'prospect-table' in m.value)
+    assert any('12.345.678/0001-90' in w.value and '12345678000190' in w.value for w in at.caption)
+    next(w for w in at.multiselect if w.label == 'Porte da empresa').set_value(['03']).run()
+    assert at.metric[0].value == '0'
+    assert any('CNPJ encontrado na base, mas oculto' in w.value for w in at.info)
+    next(w for w in at.text_input if w.label == 'Buscar empresa/CNPJ/CNAE').set_value('99.999.999/0001-99').run()
+    assert any('não consta na base' in w.value for w in at.info)
+    assert not at.exception

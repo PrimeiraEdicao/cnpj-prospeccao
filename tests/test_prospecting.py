@@ -64,3 +64,16 @@ def test_link_preserves_template_and_does_not_freeze_auto_greeting():
     assert "a pessoa responsável" in render_message(DEFAULT_TEMPLATE, "", "Daniel")
     with pytest.raises(ValueError):
         render_message("Olá {nome.__class__}", "Maria", "Daniel")
+
+
+@pytest.mark.parametrize('query', ['01.234.567/0001-89', '01234567000189', ' 01.234.567/0001-89 '])
+def test_search_cnpj_with_or_without_punctuation_and_leading_zero(query):
+    df = demo_data(date(2026, 10, 6))
+    df['cnpj'] = ['01234567000189', '98765432000110', '11222333000199', '00987654000111']
+    df = prepare_data(df)
+    df['idade_anos'], df['attempt_count'] = 2, 0
+    assert filter_data(df, search=query).cnpj.tolist() == ['01234567000189']
+    # Continua combinando a busca com os filtros, sem ignorar o porte escolhido.
+    assert filter_data(df, search=query, portes=['03']).empty
+    assert filter_data(df, search='Oficina').cnpj.tolist() == ['98765432000110']
+    assert len(filter_data(df, search='4712100')) == 3

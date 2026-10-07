@@ -14,11 +14,12 @@ import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 from src.demo import demo_data
-from src.prospecting import (DEFAULT_TEMPLATE, EXCLUSIONS, PORTE_LABELS, contact_link,
+from src.prospecting import (DEFAULT_TEMPLATE, EXCLUSIONS, PORTE_LABELS, cnpj_query, contact_link,
                              filter_data, greeting, now_local, preferred_phone,
                              prepare_data, render_message)
 from src.state import get_states, init_db, record_attempt
-from src.utils import age_years, normalize_text
+from src.theme import theme_css
+from src.utils import age_years, digits, normalize_text
 
 ROOT = Path(__file__).resolve().parent
 st.set_page_config(page_title="AlphaLab | Prospecção", page_icon=str(ROOT / "assets/alphalab-symbol.svg"), layout="wide")
@@ -116,25 +117,11 @@ def render_table(page: pd.DataFrame, template: str, sender: str, salutation: str
     st.markdown(markup, unsafe_allow_html=True)
 
 
-logo = base64.b64encode((ROOT / "assets/alphalab-logo.svg").read_bytes()).decode()
-st.markdown('''<style>
-.block-container{padding-top:2.1rem;max-width:1550px;padding-bottom:3rem}
-[data-testid="stSidebar"]{background:#F6F8FC;border-right:1px solid #E0E7F1}
-h1,h2,h3{color:#0F2D5B;letter-spacing:-.035em}
-h1{font-size:2.8rem!important;font-weight:500!important}
-.brand-header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #E0E7F1;padding:0 0 1rem;margin-bottom:1.7rem;gap:1rem}
-.brand-header img{width:175px;height:auto}.brand-header span{font-size:.72rem;color:#52647E;letter-spacing:.15em;text-transform:uppercase}
-.eyebrow{color:#315FC3;font-size:.72rem;letter-spacing:.15em;margin-bottom:.45rem;font-weight:700}
-[data-testid="stMetric"]{padding:1.2rem;border:1px solid #E0E7F1;background:#F6F8FC;border-radius:10px}
-.prospect-table{width:100%;overflow-x:auto;border:1px solid #E0E7F1;border-radius:10px;margin:1rem 0 1.3rem}
-.prospect-table table{width:100%;border-collapse:collapse;font-size:.8rem;min-width:940px}
-.prospect-table th{background:#F6F8FC;color:#52647E;text-align:left;padding:.85rem 1rem;font-weight:600;white-space:nowrap}
-.prospect-table td{padding:1rem;border-top:1px solid #E0E7F1;vertical-align:middle;color:#0F2D5B}
-.prospect-table tr:hover td{background:#FAFBFE}.prospect-table small{display:block;color:#52647E;font-size:.71rem;margin-top:.35rem}
-.prospect-table .company{min-width:230px;max-width:330px}.prospect-table .activity{max-width:250px;min-width:150px}
-.contact-action{display:inline-block;background:#0F2D5B;color:white!important;padding:.55rem .7rem;border-radius:5px;text-decoration:none!important;font-size:.74rem;white-space:nowrap;margin:2px 0}
-.contact-action:hover{background:#315FC3}.actions{min-width:106px}.muted{color:#52647E;font-size:.75rem}
-</style>''', unsafe_allow_html=True)
+with st.sidebar:
+    appearance = st.radio("Aparência", ["Claro", "Escuro"], horizontal=True, key="appearance")
+logo_path = ROOT / "assets" / ("alphalab-logo-reverse.svg" if appearance == "Escuro" else "alphalab-logo.svg")
+logo = base64.b64encode(logo_path.read_bytes()).decode()
+st.markdown("<style>" + theme_css(appearance) + "</style>", unsafe_allow_html=True)
 st.markdown(f'<div class="brand-header"><img src="data:image/svg+xml;base64,{logo}" alt="AlphaLab">'
             '<span>Dados · Prospecção · Relacionamento</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="eyebrow">INTELIGÊNCIA PARA SEU PRÓXIMO CONTATO</div>', unsafe_allow_html=True)
@@ -175,7 +162,7 @@ else:
 df["attempt_count"] = pd.to_numeric(df["attempt_count"], errors="coerce").fillna(0).astype(int)
 
 with st.sidebar:
-    st.image(str(ROOT / "assets/alphalab-logo.svg"), width=155)
+    st.image(str(logo_path), width=155)
     st.subheader("Seu público")
     cities = sorted(df["cidade_label"].unique())
     city_sel = st.multiselect("Cidade / UF", cities, help="Sem seleção: todas as cidades já carregadas.")
@@ -197,6 +184,7 @@ with st.sidebar:
     only_mobile = st.checkbox("Somente celular provável", value=False)
     contact_status = st.selectbox("Histórico de contato", ["Nunca tentado", "Todos", "Já tentado"])
     search = st.text_input("Buscar empresa/CNPJ/CNAE", placeholder="Nome, CNPJ ou atividade")
+    st.caption("CNPJ aceito: 12.345.678/0001-90 ou 12345678000190 (14 dígitos). A busca respeita os filtros selecionados.")
     with st.expander("Como incluir outra cidade"):
         st.write("No GitHub: Actions → Atualizar base Receita CNPJ → Run workflow. Informe a UF e o código do município na Receita. A cidade será adicionada à configuração e à próxima carga.")
         st.caption("Os códigos da Receita têm quatro dígitos e diferem dos códigos de sete dígitos do IBGE. A carga processa os arquivos nacionais e pode demorar.")
@@ -231,7 +219,13 @@ with st.expander("Mensagem e saudação", expanded=True):
 st.subheader("Empresas para contato")
 st.caption("Os links ficam na primeira coluna e reutilizam a mesma aba do WhatsApp. Confira a mensagem antes de enviar.")
 if filtered.empty:
-    st.info("Nenhuma empresa atende aos filtros atuais. Amplie os bairros, portes ou atividades selecionados.")
+    searched_cnpj = cnpj_query(search)
+    if searched_cnpj and df["cnpj"].map(digits).eq(searched_cnpj).any():
+        st.info("CNPJ encontrado na base, mas oculto pelos filtros atuais. Confira cidade, bairro, porte, idade, atividades, telefone e histórico de contato.")
+    elif searched_cnpj:
+        st.info("Este CNPJ não consta na base carregada. A base contém estabelecimentos ativos não-MEI das cidades já carregadas.")
+    else:
+        st.info("Nenhuma empresa atende aos filtros atuais. Amplie os bairros, portes ou atividades selecionados.")
     st.stop()
 page_size = 50
 pages = math.ceil(len(filtered) / page_size)
