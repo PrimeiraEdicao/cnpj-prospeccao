@@ -2,6 +2,19 @@ name: Atualizar base Receita CNPJ
 
 on:
   workflow_dispatch:
+    inputs:
+      adicionar_uf:
+        description: "UF da nova cidade (vazio: atualizar apenas as cidades configuradas)"
+        required: false
+        default: ""
+      adicionar_municipios:
+        description: "Códigos Receita de 4 dígitos, separados por vírgula (não usar código IBGE)"
+        required: false
+        default: ""
+      nome_cidade:
+        description: "Nome opcional para um único município; a tabela Receita prevalece"
+        required: false
+        default: ""
   schedule:
     # 09:00 UTC = 06:00 em Brasília. Atualização semestral.
     - cron: "0 9 10 1,7 *"
@@ -16,6 +29,9 @@ on:
       - "scripts/**"
       - ".devcontainer/**"
       - ".python-version"
+      - "config/**"
+      - "assets/**"
+      - ".streamlit/**"
   pull_request:
     paths:
       - "src/**"
@@ -26,6 +42,9 @@ on:
       - "scripts/**"
       - ".devcontainer/**"
       - ".python-version"
+      - "config/**"
+      - "assets/**"
+      - ".streamlit/**"
 
 permissions:
   contents: read
@@ -83,12 +102,22 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ "$EVENT_NAME" = "push" ] && [ -f data/companies.parquet ]; then
+          if [ "$EVENT_NAME" = "push" ] && [ -f data/companies.parquet ] && python - <<'PY'
+          import json
+          from pathlib import Path
+          configured = json.loads(Path('config/scopes.json').read_text())
+          metadata = json.loads(Path('data/release.json').read_text())
+          loaded = metadata.get('scopes') or [{'uf': metadata.get('uf'), 'municipio_code': metadata.get('municipio_code')}]
+          def pairs(scopes):
+              return {(s['uf'], str(s['municipio_code'])) for s in scopes}
+          raise SystemExit(0 if pairs(configured) == pairs(loaded) else 1)
+          PY
+          then
             echo "executar=false" >> "$GITHUB_OUTPUT"
             echo "Base já existente: push valida o código sem refazer o ETL nacional."
           else
             echo "executar=true" >> "$GITHUB_OUTPUT"
-            echo "Iniciando primeira carga ou atualização solicitada/agendada."
+            echo "Iniciando primeira carga, mudança de municípios ou atualização solicitada/agendada."
           fi
       - uses: actions/setup-python@v7
         if: steps.carga.outputs.executar == 'true'
@@ -104,13 +133,19 @@ jobs:
           TARGET_UF: MG
           TARGET_MUNICIPIO_CODE: "4553"
           CSV_CHUNK_SIZE: "100000"
-        run: python -m src.etl --output data/companies.parquet
+          ADD_UF: ${{ inputs.adicionar_uf }}
+          ADD_MUNICIPIOS: ${{ inputs.adicionar_municipios }}
+          ADD_NOME: ${{ inputs.nome_cidade }}
+        run: |
+          python -m src.etl --scopes-file config/scopes.json \
+            --add-uf "$ADD_UF" --add-municipios "$ADD_MUNICIPIOS" --add-nome "$ADD_NOME" \
+            --output data/companies.parquet
       - name: Commit da nova competência
         if: steps.carga.outputs.executar == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/companies.parquet data/release.json
+          git add data/companies.parquet data/release.json config/scopes.json
           if git diff --cached --quiet; then
             echo "Sem mudança na base."
             exit 0

@@ -15,6 +15,9 @@ def demo_data(today: date) -> pd.DataFrame:
     for i, (name, bairro, years, contact, accounting) in enumerate(examples, 1):
         rows.append({
             "cnpj": f"DEMO-{i:09d}", "razao_social": name,
+            "uf": "MG", "municipio": "4553", "municipio_nome": "Governador Valadares",
+            "porte_empresa": "03" if i == 2 else "01", "natureza_juridica": "2062",
+            "cnae_fiscal_secundaria": "",
             "nome_fantasia": name, "bairro": bairro,
             "data_abertura": pd.Timestamp(today) - pd.DateOffset(years=years),
             "cnae_fiscal_principal": "6920601" if accounting else "4712100",

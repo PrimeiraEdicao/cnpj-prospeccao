@@ -1,0 +1,23 @@
+{
+  "educacao": {
+    "label": "Escolas, creches e educação",
+    "cnae_prefixes": ["85"],
+    "naturezas": []
+  },
+  "religiao": {
+    "label": "Igrejas e organizações religiosas",
+    "cnae_prefixes": ["9491000"],
+    "naturezas": ["3220"]
+  },
+  "politica": {
+    "label": "Partidos e organizações políticas",
+    "cnae_prefixes": ["9492800"],
+    "naturezas": ["3255", "3263", "3271"]
+  },
+  "governo": {
+    "label": "Órgãos e entidades governamentais",
+    "cnae_prefixes": ["84"],
+    "naturezas": ["2011", "2038"],
+    "natureza_prefixes": ["1"]
+  }
+}

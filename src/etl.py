@@ -23,6 +23,7 @@ from .constants import (
     SOCIO_COLS,
 )
 from .receita import TempDownload, list_zip_urls, resolve_release, select_files, validate_zip_catalog
+from .scopes import add_scopes, geographic_mask, load_scopes, validate_scopes
 from .utils import (
     cnpj_full,
     first_name,
@@ -67,7 +68,8 @@ def read_small_zip(zip_path: Path, names: list[str]) -> pd.DataFrame:
     return next(iter_zip_csv(zip_path, names, chunksize=10_000_000))
 
 
-def collect_establishments(urls: list[str], uf: str, municipio_code: str, chunksize: int) -> pd.DataFrame:
+def collect_establishments(urls: list[str], uf: str, municipio_code: str, chunksize: int,
+                           scopes: list[dict] | None = None) -> pd.DataFrame:
     selected = select_files(urls, "Estabele")
     if not selected:
         raise RuntimeError("Arquivos de Estabelecimentos não encontrados na competência da Receita.")
@@ -87,11 +89,9 @@ def collect_establishments(urls: list[str], uf: str, municipio_code: str, chunks
                 chunk["uf"] = chunk["uf"].str.upper().str.strip()
                 chunk["municipio"] = chunk["municipio"].map(lambda x: normalize_code(x))
                 chunk["situacao_cadastral"] = chunk["situacao_cadastral"].map(lambda x: normalize_code(x, 2))
-                f = chunk[
-                    (chunk["uf"] == uf.upper())
-                    & (chunk["municipio"] == normalize_code(municipio_code))
-                    & (chunk["situacao_cadastral"] == SITUACAO_ATIVA)
-                ][keep_cols].copy()
+                scope_mask = (geographic_mask(chunk, scopes) if scopes else
+                              (chunk["uf"] == uf.upper()) & (chunk["municipio"] == normalize_code(municipio_code)))
+                f = chunk[scope_mask & (chunk["situacao_cadastral"] == SITUACAO_ATIVA)][keep_cols].copy()
                 if not f.empty:
                     frames.append(f)
     if not frames:
@@ -156,6 +156,15 @@ def collect_cnaes(urls: list[str]) -> dict[str, str]:
         return {}
     with TempDownload(selected[0]) as path:
         df = read_small_zip(path, CNAE_COLS)
+    return {normalize_code(k): normalize_text(v) for k, v in zip(df["codigo"], df["descricao"])}
+
+
+def collect_municipalities(urls: list[str]) -> dict[str, str]:
+    selected = select_files(urls, "Municip")
+    if not selected:
+        return {}
+    with TempDownload(selected[0]) as path:
+        df = read_small_zip(path, ["codigo", "descricao"])
     return {normalize_code(k): normalize_text(v) for k, v in zip(df["codigo"], df["descricao"])}
 
 
@@ -274,7 +283,7 @@ def enrich_and_filter(
         "cnpj", "cnpj_basico", "razao_social", "nome_fantasia", "data_abertura",
         "bairro", "tipo_logradouro", "logradouro", "numero", "complemento", "cep",
         "uf", "municipio", "cnae_fiscal_principal", "cnae_principal_descricao",
-        "cnae_fiscal_secundaria", "natureza_juridica", "porte_empresa",
+        "cnae_fiscal_secundaria", "natureza_juridica", "porte_empresa", "ente_federativo_responsavel",
         "ddd_1", "telefone_1", "ddd_2", "telefone_2", "whatsapp_1", "whatsapp_2",
         "celular_1_provavel", "celular_2_provavel", "tem_telefone", "correio_eletronico",
         "nomes_socios", "nome_contato", "primeiro_nome", "qualificacao_contato",
@@ -294,16 +303,28 @@ def run_etl(
     release_name: str | None = None,
     chunksize: int = 250_000,
     exclusion_file: str | Path = "config/exclusion_cnaes.txt",
+    scopes: list[dict] | None = None,
 ):
+    scopes = validate_scopes(scopes or [{"uf": uf, "municipio_code": municipio_code,
+                                        "nome": "Governador Valadares" if (uf.upper(), municipio_code) == ("MG", "4553") else ""}])
     release = resolve_release(release_name)
     print(f"Competência selecionada: {release.name}")
     urls = list_zip_urls(release)
     catalog = validate_zip_catalog(urls)
     print(f"ZIPs publicados encontrados: {len(urls)}")
 
-    estab = collect_establishments(urls, uf, municipio_code, chunksize)
+    municipalities = collect_municipalities(urls)
+    for scope in scopes:
+        if municipalities and scope["municipio_code"] not in municipalities:
+            raise ValueError(f"Código Receita não encontrado: {scope['municipio_code']}")
+        scope["nome"] = municipalities.get(scope["municipio_code"], scope["nome"])
+    estab = collect_establishments(urls, uf, municipio_code, chunksize, scopes=scopes)
     if estab.empty:
         raise RuntimeError(f"Nenhum estabelecimento ativo encontrado para UF={uf}, município={municipio_code}.")
+    found = set(zip(estab["uf"], estab["municipio"]))
+    missing = {(s["uf"], s["municipio_code"]) for s in scopes} - found
+    if missing:
+        raise RuntimeError(f"Nenhum estabelecimento ativo nos escopos {sorted(missing)}. Confira UF e código Receita antes de publicar a base.")
     roots = set(estab["cnpj_basico"].astype(str))
     print(f"Estabelecimentos ativos no escopo: {len(estab):,}; raízes CNPJ: {len(roots):,}")
 
@@ -321,6 +342,8 @@ def run_etl(
     estab = estab[estab["cnpj_basico"].isin(roots_after_mei)].copy()
     simples = simples[simples["cnpj_basico"].isin(roots_after_mei)].copy()
     final = enrich_and_filter(estab, simples, empresas, socios, cnae_map, excluded)
+    names = {(s["uf"], s["municipio_code"]): s["nome"] for s in scopes}
+    final["municipio_nome"] = [names.get((u, m), "") for u, m in zip(final["uf"], final["municipio"])]
 
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -329,8 +352,9 @@ def run_etl(
         "receita_release": release.name,
         "catalog_url": release.url,
         "zip_catalog": catalog,
-        "uf": uf.upper(),
-        "municipio_code": normalize_code(municipio_code),
+        "uf": scopes[0]["uf"] if len(scopes) == 1 else "MULTIPLOS",
+        "municipio_code": scopes[0]["municipio_code"] if len(scopes) == 1 else "",
+        "scopes": scopes,
         "rows": int(len(final)),
         "non_mei_rule": "opcao_pelo_mei != 'S' na tabela Simples, join por CNPJ básico",
         "accounting_cnaes": sorted(excluded),
@@ -351,16 +375,29 @@ def parse_args():
     p.add_argument("--output", default="data/companies.parquet")
     p.add_argument("--chunksize", type=int, default=int(os.getenv("CSV_CHUNK_SIZE", "250000")))
     p.add_argument("--exclusion-file", default="config/exclusion_cnaes.txt")
+    p.add_argument("--scopes-file", help="JSON com municípios de várias UFs; substitui o escopo único de --uf/--municipio-code")
+    p.add_argument("--add-uf", default="")
+    p.add_argument("--add-municipios", default="", help="Códigos Receita de quatro dígitos separados por vírgula")
+    p.add_argument("--add-nome", default="")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    run_etl(
+    configured = load_scopes(args.scopes_file) if args.scopes_file else None
+    if configured is None and any([args.add_uf, args.add_municipios, args.add_nome]):
+        raise ValueError("Use --scopes-file para adicionar cidades à configuração existente.")
+    if configured is not None:
+        configured = add_scopes(configured, args.add_uf, args.add_municipios, args.add_nome)
+    _, meta = run_etl(
         uf=args.uf,
         municipio_code=args.municipio_code,
         output=args.output,
         release_name=args.release,
         chunksize=args.chunksize,
         exclusion_file=args.exclusion_file,
+        scopes=configured,
     )
+    # A configuração só é alterada depois de uma carga concluída com sucesso.
+    if args.scopes_file:
+        Path(args.scopes_file).write_text(json.dumps(meta["scopes"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

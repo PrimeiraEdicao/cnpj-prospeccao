@@ -29,7 +29,20 @@ Não use `natureza_juridica == 2135` como sinônimo de MEI: `213-5` identifica *
 
 ## Escopo padrão
 
-O notebook original usa município Receita `4553`, correspondente a **Governador Valadares/MG**. Esse é o padrão em `.env.example` e no workflow, mas pode ser alterado.
+A base atual é de **Governador Valadares/MG**, código Receita `4553`. A configuração persistente está em `config/scopes.json` e aceita vários municípios de várias UFs. O ETL percorre os ZIPs nacionais uma vez e retém os pares UF/município configurados.
+
+Para adicionar uma cidade, abra **Actions → Atualizar base Receita CNPJ → Run workflow** e preencha `adicionar_uf` e `adicionar_municipios`. Os códigos Receita têm **quatro dígitos**; não use o código IBGE de sete dígitos. É possível informar vários códigos da mesma UF separados por vírgula. O campo `nome_cidade` é opcional, e o nome da tabela Municípios da Receita prevalece. Deixe os campos vazios para atualizar apenas o escopo existente.
+
+A cidade será acrescentada a `config/scopes.json` **após a carga concluir com sucesso**, preservando Valadares e as demais cidades. As atualizações semestrais usam essa configuração. O filtro da interface lista somente cidades já presentes no Parquet; a seleção não baixa uma nova cidade.
+
+Alternativa no terminal:
+
+```bash
+.venv-cnpj312/bin/python -m src.etl --scopes-file config/scopes.json \
+  --add-uf SUA_UF --add-municipios CODIGO_RECEITA --output data/companies.parquet
+```
+
+Substitua os dois valores pelos dados reais. Para atualizar a configuração sem acrescentar cidades, omita `--add-uf` e `--add-municipios`. A leitura do catálogo Municípios valida o código antes dos ZIPs grandes; uma combinação UF/código sem estabelecimentos ativos interrompe a publicação.
 
 ## Idade da empresa
 
@@ -39,7 +52,7 @@ O ETL **não exclui empresas com menos de 1 ano**. O Streamlit calcula a idade d
 
 O workflow `.github/workflows/update-receita.yml` roda em **10 de janeiro e 10 de julho**, além de permitir execução manual (`workflow_dispatch`). Janeiro/julho é um intervalo efetivo de seis meses.
 
-A **primeira carga também começa automaticamente após um push de código para `main` enquanto `data/companies.parquet` estiver ausente**. Quando a base já existe, os pushes validam o código e a fonte sem refazer o processamento nacional. As atualizações completas continuam semestrais ou manuais.
+A **primeira carga também começa automaticamente após um push de código para `main` enquanto `data/companies.parquet` estiver ausente**. Quando a base já existe e o conjunto de municípios configurados é igual ao da última carga, os pushes validam o código e a fonte sem refazer o processamento nacional. Alterar os municípios em `config/scopes.json` também inicia uma carga. As atualizações completas continuam semestrais ou manuais.
 
 Os jobs aparecem separadamente no GitHub Actions:
 
@@ -100,8 +113,10 @@ Na aba **Ports**, abra a porta **8501** no navegador. Para encerrar, pressione `
 ## Filtros disponíveis no app
 
 - idade mínima e máxima da empresa;
-- bairro;
+- cidade/UF e bairro (seleção múltipla, com agrupamento de variações de espaços, caixa e acentos);
+- porte cadastral: `01` ME, `03` EPP, `05` Demais e `00` Não informado; ME/EPP vêm selecionados;
 - remover ou manter escritórios/serviços contábeis;
+- excluir escolas/creches/educação, igrejas, partidos e entidades governamentais;
 - somente registros com telefone;
 - somente celular provável;
 - nunca tentado / já tentado / todos;
@@ -130,15 +145,46 @@ O pipeline evita inferir nomes a partir de texto arbitrário sempre que possíve
 
 Isso é mais seguro do que uma “proxy de nomes” genérica, porque o próprio tipo do registro na base pública informa se o sócio é pessoa física.
 
-## Registro de tentativa de WhatsApp
+## Contatos na tabela, saudação e fila
 
-O app gera um link relativo para ele próprio. Quando o link é aberto:
+A primeira coluna da tabela traz links para os telefones válidos de **cada empresa**, com a mensagem personalizada. A lista mostra 50 empresas por página. Todos os links usam a mesma aba nomeada do WhatsApp, reduzindo a necessidade de abrir e fechar abas.
 
-1. o app recebe `CNPJ + attempt_id`;
-2. grava a tentativa no banco;
-3. redireciona o novo separador para `wa.me`.
+A saudação usa `America/Sao_Paulo`: **Bom dia** das 6h às 11h59, **Boa tarde** das 12h às 17h59 e **Boa noite** das 18h às 5h59. Ela é recalculada na abertura de cada contato, inclusive se a tabela tiver sido carregada antes da mudança de horário. É possível escolher uma saudação personalizada. O texto padrão inclui **Tudo bem?**:
 
-O `attempt_id` torna o registro idempotente: um rerun do Streamlit não duplica a tentativa.
+```text
+{saudacao}! Tudo bem? Sou {remetente}. Nesse contato falo com {nome}?
+```
+
+A apresentação e a mensagem são editáveis no app. `CONTACT_SENDER` e `CONTACT_TEMPLATE` no `.env` ou Secrets definem os padrões para outros projetos. O nome pode ser revisado individualmente; sem nome identificado, usa-se “a pessoa responsável”.
+
+Na **Fila de contatos**, selecione empresas ou adicione a página inteira. Abra cada contato na mesma aba e use **Próximo contato** para avançar. A fila fica na sessão atual e acompanha os filtros; não envia mensagens nem registra tentativas ao adicionar ou avançar.
+
+Ao abrir um link, o app valida CNPJ e telefone, registra a abertura no histórico e redireciona para `wa.me`. O `attempt_id` torna essa abertura idempotente. **Uma abertura não confirma envio ou entrega**: a mensagem deve ser conferida e enviada no WhatsApp. O histórico pode ser atualizado sem recarregar os dados.
+
+### Regras das atividades fora do foco
+
+As regras de `config/prospect_exclusions.json` são aplicadas na interface à base já carregada; não é necessário refazer o ETL para remover esse público. Considere os CNAEs principal **e secundários**:
+
+| Público | CNAE | Natureza jurídica adicional |
+| --- | --- | --- |
+| Escolas, creches e educação | Divisão `85`, incluindo outros tipos de ensino | — |
+| Igrejas e organizações religiosas | `9491000` | `3220` |
+| Partidos e organizações políticas | `9492800` | `3255`, `3263`, `3271` |
+| Governo | Divisão `84` | Grupo `1`, `2011` (empresa pública), `2038` (economia mista); ente federativo responsável informado quando disponível |
+
+As quatro categorias vêm removidas por padrão e podem ser reabilitadas no filtro. As naturezas adicionais são importantes porque entidades públicas também podem ter CNAE de saúde, ensino ou outros setores. A classificação se baseia nos campos publicados; não infere controle governamental pelo nome da empresa.
+
+Fontes: [layout CNPJ/RFB](https://www.gov.br/receitafederal/dados/cnpj-metadados.pdf), [CNAE/IBGE](https://cnae.ibge.gov.br/?view=estrutura) e [natureza jurídica/IBGE](https://cnae.ibge.gov.br/documentacao/cronologia/3051-concla/estrutura/natureza-juridica-2021.html).
+
+### Automação de envio
+
+O caminho para envio sem abrir cada conversa é a **WhatsApp Business Platform / Cloud API**, com conta configurada, autorização dos destinatários e templates aprovados. A base pública do CNPJ não contém essa autorização, e a verificação da conta não elimina as regras nem assegura imunidade a bloqueios. Nesta versão, a fila organiza os contatos e o envio continua no WhatsApp; não há disparo automático nem integração API configurada.
+
+Fonte: [política oficial de mensagens do WhatsApp Business](https://business.whatsapp.com/policy).
+
+## Identidade visual
+
+O app usa os SVGs oficiais de [PrimeiraEdicao/alphalab-site](https://github.com/PrimeiraEdicao/alphalab-site), preservados sem alteração. Azul-marinho `#0F2D5B`, azul de apoio `#315FC3`, destaque `#4F8CFF`, fundo `#F6F8FC` e divisórias `#E0E7F1`. O tema está em `.streamlit/config.toml`; os ativos ficam em `assets/` e não dependem de um site externo para carregar.
 
 ### Persistência
 
