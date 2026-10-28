@@ -147,7 +147,7 @@ Isso é mais seguro do que uma “proxy de nomes” genérica, porque o próprio
 
 ## Contatos na tabela, saudação e fila
 
-A primeira coluna da tabela traz links para os telefones válidos de **cada empresa**, com a mensagem personalizada. A lista mostra 50 empresas por página. Todos os links usam a mesma aba nomeada do WhatsApp, reduzindo a necessidade de abrir e fechar abas.
+A tabela permite marcar empresas e clicar em **Abrir WhatsApps selecionados (N)** para abrir uma aba por empresa. A lista começa com **20 empresas por página**, com opções de 50 e 100. Os links individuais para os telefones válidos continuam disponíveis. A abertura em lote usa um número por empresa, priorizando o celular provável.
 
 A saudação usa `America/Sao_Paulo`: **Bom dia** das 6h às 11h59, **Boa tarde** das 12h às 17h59 e **Boa noite** das 18h às 5h59. Ela é recalculada na abertura de cada contato, inclusive se a tabela tiver sido carregada antes da mudança de horário. É possível escolher uma saudação personalizada. O texto padrão inclui **Tudo bem?**:
 
@@ -239,3 +239,18 @@ Se futuramente o produto precisar atender várias cidades/usuários, a evoluçã
 ```bash
 python -m pytest -q
 ```
+
+
+### Abrir WhatsApps em lote
+
+- A lista começa com 20 empresas por página; escolha também 50 ou 100.
+- Marque as empresas na tabela ou use **Selecionar esta página**. O contador e o destaque das linhas acompanham a seleção.
+- Clique em **Abrir WhatsApps selecionados (N)**: será aberta uma aba por empresa, com um número por empresa, priorizando o celular provável. Os links individuais continuam disponíveis para escolher o outro telefone.
+- Permita **pop-ups e redirecionamentos** deste aplicativo no navegador. Se alguma abertura for bloqueada, ela continua selecionada; clique novamente depois de liberar os pop-ups. As abas que já abriram saem da seleção e não são repetidas pelo lote nesta lista.
+- A seleção vale apenas para a página visível e é limpa quando a lista é atualizada (página, filtros, mensagem ou aparência). Contatos revisados, sem telefone e dados de demonstração ficam desativados.
+- Cada aba usa a mesma rota de contato dos links individuais: valida CNPJ/telefone/revisão, atualiza a saudação e registra a abertura com ID idempotente. Selecionar, limpar ou ter uma abertura bloqueada não registra tentativa.
+- Confira a mensagem e confirme o envio em cada conversa do WhatsApp. A abertura da aba não confirma entrega nem envio.
+
+O controle do navegador pode apresentar abas ou janelas conforme suas preferências. O lote faz as aberturas diretamente no clique, sem temporizadores ou automação de envio.
+
+Testes da seleção e dos bloqueios de pop-up simulados: com as dependências Python instaladas, execute `npm ci` e `npm test` em `tests/frontend` (Node 22). O workflow executa esses testes junto com a suíte Python. Esses testes de DOM não substituem a verificação das permissões de pop-up no navegador usado em produção.

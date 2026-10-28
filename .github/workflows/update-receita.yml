@@ -70,6 +70,18 @@ jobs:
         run: bash scripts/run_app.sh --setup-only
       - name: Rodar testes de regressão e interface
         run: .venv-cnpj312/bin/python -m pytest -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tests/frontend/package-lock.json
+      - name: Testar seleção e abertura em lote (DOM e pop-ups simulados)
+        working-directory: tests/frontend
+        env:
+          PYTHON: ${{ github.workspace }}/.venv-cnpj312/bin/python
+        run: |
+          npm ci
+          npm test
 
   validar-fonte:
     needs: testes

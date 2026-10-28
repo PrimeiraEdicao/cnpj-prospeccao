@@ -14,6 +14,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
+from src.contact_table import build_contact_table
 from src.demo import demo_data
 from src.prospecting import (DEFAULT_TEMPLATE, EXCLUSIONS, PORTE_LABELS, cnpj_query, contact_link,
                              filter_data, greeting, now_local, preferred_phone,
@@ -98,32 +99,9 @@ def action_link(url: str, label: str) -> str:
 
 
 def render_table(page: pd.DataFrame, template: str, sender: str, salutation: str | None, demo: bool):
-    rows = []
-    for _, row in page.iterrows():
-        phones = list(dict.fromkeys(normalize_text(row.get(f"whatsapp_{i}")) for i in (1, 2)))
-        phones = [phone for phone in phones if phone]
-        actions = '<span class="muted">Demonstração</span>' if demo else " ".join(
-            action_link(contact_link(row, phone, template, sender, salutation=salutation),
-                        "WhatsApp" if len(phones) == 1 else f"WhatsApp {i}")
-            for i, phone in enumerate(phones, 1)) or '<span class="muted">Sem telefone</span>'
-        if row.get("reviewed", False):
-            actions = '<span class="muted">Revisado — não contatar</span>'
-        company = html.escape(normalize_text(row.get("razao_social")))
-        cnpj = html.escape(str(row["cnpj"]))
-        name = html.escape(normalize_text(row.get("primeiro_nome")) or "Nome a revisar")
-        bairro = html.escape(normalize_text(row.get("bairro")) or "Sem bairro informado")
-        city = html.escape(str(row["cidade_label"]))
-        porte = html.escape(str(row["porte"]))
-        cnae = html.escape(normalize_text(row.get("cnae_principal_descricao")) or str(row.get("cnae_fiscal_principal", "")))
-        age = f"{row['idade_anos']:.1f}" if pd.notna(row['idade_anos']) else "—"
-        attempts = int(row.get("attempt_count", 0))
-        rows.append(f'<tr><td class="actions">{actions}</td><td class="company"><strong>{company}</strong>'
-                    f'<small>{cnpj} · {name}</small></td><td>{bairro}<small>{city}</small></td>'
-                    f'<td>{porte}</td><td class="activity">{cnae}</td><td>{age}</td><td>{attempts}</td></tr>')
-    markup = ('<div class="prospect-table"><table><thead><tr><th>Contato</th><th>Empresa / responsável</th>'
-              '<th>Bairro / cidade</th><th>Porte</th><th>Atividade</th><th>Anos</th><th>Aberturas</th>'
-              '</tr></thead><tbody>' + "".join(rows) + '</tbody></table></div>')
-    st.markdown(markup, unsafe_allow_html=True)
+    app_url = getattr(getattr(st, "context", None), "url", "") or ""
+    markup = build_contact_table(page, template, sender, salutation, demo, appearance, app_url)
+    components.html(markup, height=min(800, 300 + len(page) * 88), scrolling=True)
 
 
 with st.sidebar:
@@ -265,7 +243,7 @@ with st.expander("Mensagem e saudação", expanded=True):
     st.caption("A saudação automática é atualizada ao abrir cada contato, inclusive quando a página ficou aberta por horas.")
 
 st.subheader("Empresas para contato")
-st.caption("Os links ficam na primeira coluna e reutilizam a mesma aba do WhatsApp. Confira a mensagem antes de enviar.")
+st.caption("Selecione empresas na lista para abrir vários WhatsApps de uma vez, ou use o link individual. O envio é confirmado por você em cada conversa.")
 if filtered.empty:
     searched_cnpj = cnpj_query(search)
     reviewed_match = df[df["cnpj"].map(digits).eq(searched_cnpj)] if searched_cnpj else pd.DataFrame()
@@ -278,10 +256,10 @@ if filtered.empty:
     else:
         st.info("Nenhuma empresa atende aos filtros atuais. Amplie os bairros, portes ou atividades selecionados.")
     st.stop()
-page_size = 50
+page_size = st.selectbox("Empresas por página", [20, 50, 100], key="page_size")
 pages = math.ceil(len(filtered) / page_size)
 # Mudar um filtro retorna à página 1 em vez de manter uma página fora do resultado.
-signature = (tuple(filtered["cnpj"]),)
+signature = (tuple(filtered["cnpj"]), page_size)
 if st.session_state.get("filter_signature") != signature:
     st.session_state["page"] = 1
     st.session_state["filter_signature"] = signature
@@ -342,6 +320,7 @@ with st.expander("Revisar nome e telefone de uma empresa"):
     else:
         st.warning("Não há telefone válido neste registro.")
 
-with st.expander("Envio automático para vários contatos"):
-    st.write("A fila organiza a revisão e reutiliza uma aba. Para enviar sem abrir cada conversa, a integração adequada é a WhatsApp Business Platform (Cloud API), com contatos que autorizaram receber mensagens e modelos aprovados.")
+with st.expander("Sobre a abertura em lote e o envio"):
+    st.write("A seleção na tabela abre uma aba por empresa. Se o navegador bloquear alguma aba, permita pop-ups deste aplicativo e tente os contatos que continuam selecionados. O histórico registra a abertura do contato, não a confirmação do envio.")
+    st.write("Para enviar sem confirmar cada conversa, a integração adequada é a WhatsApp Business Platform (Cloud API), com contatos que autorizaram receber mensagens e modelos aprovados.")
     st.caption("A base pública do CNPJ não registra essa autorização. A integração de envio depende de configurar a conta/API e uma lista autorizada. Conta verificada também está sujeita às regras do WhatsApp.")
