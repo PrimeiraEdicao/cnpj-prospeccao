@@ -35,8 +35,9 @@ def greeting(now: datetime | None = None) -> str:
 def render_message(template: str, name: str, sender: str, salutation: str | None = None) -> str:
     values = {"saudacao": salutation or greeting(), "nome": normalize_text(name) or "a pessoa responsável",
               "remetente": sender.strip()}
-    fields = [field for _, field, _, _ in string.Formatter().parse(template) if field is not None]
-    if any(field not in values for field in fields):
+    parsed = list(string.Formatter().parse(template))
+    if any(field is not None and (field not in values or fmt or conversion)
+           for _, field, fmt, conversion in parsed):
         raise ValueError("Use apenas {saudacao}, {nome} e {remetente} na mensagem.")
     return template.format(**values)
 
@@ -51,6 +52,16 @@ def contact_link(row, phone: str, template: str, sender: str, name: str | None =
     # A saudação automática é calculada novamente ao abrir o link, mesmo se a
     # tabela foi carregada de manhã e o clique só ocorrer à tarde/noite.
     return "?" + urllib.parse.urlencode(query)
+
+
+def whatsapp_link(row, phone: str, template: str, sender: str, name: str | None = None,
+                  salutation: str | None = None) -> str:
+    """Destino direto do WhatsApp Web, sem passar pelo aplicativo de prospecção."""
+    if not re.fullmatch(r"\d{10,15}", str(phone)):
+        raise ValueError("Telefone inválido para o WhatsApp.")
+    contact_name = normalize_text(row.get("primeiro_nome", "")) if name is None else name
+    message = render_message(template, contact_name, sender, salutation)
+    return "https://web.whatsapp.com/send?" + urllib.parse.urlencode({"phone": phone, "text": message})
 
 
 def neighborhood_key(value) -> str:
@@ -114,10 +125,10 @@ def prepare_data(df: pd.DataFrame, meta: dict | None = None) -> pd.DataFrame:
 
 def filter_data(df: pd.DataFrame, *, cities=(), neighborhoods=(), portes=("01", "03"),
                 exclusions=tuple(EXCLUSIONS), exclude_accounting=True, min_age=1.0,
-                max_age=None, only_phone=True, only_mobile=False, contact_status="Nunca tentado",
+                max_age=None, only_phone=True, only_mobile=False, contact_status="Não contatadas",
                 search="", hide_reviewed=True) -> pd.DataFrame:
     mask = df["idade_anos"].fillna(-1).ge(min_age)
-    if hide_reviewed and "reviewed" in df:
+    if hide_reviewed and "reviewed" in df and contact_status != "Contatadas":
         mask &= ~df["reviewed"].fillna(False).astype(bool)
     if max_age is not None:
         mask &= df["idade_anos"].fillna(float("inf")).le(max_age)
@@ -137,6 +148,11 @@ def filter_data(df: pd.DataFrame, *, cities=(), neighborhoods=(), portes=("01", 
     if only_mobile:
         mask &= df["celular_1_provavel"].fillna(False) | df["celular_2_provavel"].fillna(False)
     attempted = df["attempt_count"].fillna(0).gt(0)
+    confirmed = df.get("review_status", pd.Series("", index=df.index)).eq("contatado")
+    if contact_status == "Não contatadas":
+        mask &= ~confirmed
+    elif contact_status == "Contatadas":
+        mask &= confirmed
     if contact_status == "Nunca tentado":
         mask &= ~attempted
     elif contact_status == "Já tentado":

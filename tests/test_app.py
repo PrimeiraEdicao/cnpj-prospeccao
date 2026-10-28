@@ -10,8 +10,9 @@ APP = Path(__file__).resolve().parents[1] / "app.py"
 
 
 def contact_table(at):
-    return next(w.proto.srcdoc for w in at.get("iframe")
-                if 'class="prospect-table"' in w.proto.srcdoc)
+    import json
+    return next(json.loads(w.proto.json_args)["markup"] for w in at.get("component_instance")
+                if w.proto.component_name.endswith("contact_table"))
 
 
 def test_demo_opens_without_database_or_real_data(tmp_path, monkeypatch):
@@ -101,7 +102,7 @@ def test_real_table_links_queue_and_manual_name_do_not_record_until_opened(tmp_p
     assert not at.exception
     assert at.metric[0].value == '2'
     table = contact_table(at)
-    assert table.count('target="cnpj-whatsapp"') == 2
+    assert table.count('target="_blank"') == 2
     assert '<th>Contato</th>' in table
     assert 'Mercado Exemplo' not in table
     assert get_states(['00000000000001'], init_db()) == []
@@ -113,9 +114,13 @@ def test_real_table_links_queue_and_manual_name_do_not_record_until_opened(tmp_p
     assert at.session_state['contact_queue'] == ['00000000000002']
     assert get_states(['00000000000001'], init_db()) == []
     next(w for w in at.text_input if w.label == 'Nome usado na saudação').set_value('Juliana').run()
-    links = [html.unescape(m.value) for m in at.markdown if 'Abrir WhatsApp e registrar tentativa</a>' in m.value]
+    links = [html.unescape(m.value) for m in at.markdown if 'Abrir WhatsApp</a>' in m.value]
     assert len(links) == 1
-    assert parse_qs(links[0].split('href="?')[1].split('"')[0])['name'] == ['Juliana']
+    from urllib.parse import urlparse
+    query = parse_qs(urlparse(links[0].split('href="')[1].split('"')[0]).query)
+    assert 'Juliana' in query['text'][0]
+    assert 'web.whatsapp.com/send' in links[0]
+    assert '?contact=' not in links[0]
 
 
 def test_contact_link_recomputes_greeting_at_click_time(tmp_path, monkeypatch):
@@ -217,7 +222,7 @@ def test_import_ui_persists_reviews_removes_queue_and_allows_read_only_inspectio
     assert 'Revisado — não contatar' in table and 'href=' not in table
     next(b for b in at.button if b.label == 'Adicionar esta página à fila').click().run()
     assert at.session_state['contact_queue'] == []
-    assert not any('Abrir WhatsApp e registrar tentativa</a>' in m.value for m in at.markdown)
+    assert not any('Abrir WhatsApp</a>' in m.value for m in at.markdown)
     next(b for b in at.button if b.label == 'Importar CNPJs revisados').click().run()
     assert len(get_reviews(init_db())) == 1
     fresh = AppTest.from_file(str(APP)).run(timeout=15)
@@ -257,6 +262,7 @@ def test_page_size_and_filters_reset_page_and_batch_contains_only_visible_rows(t
     data.to_parquet(tmp_path / 'data/companies.parquet', index=False)
     at = AppTest.from_file(str(APP)).run(timeout=15)
     assert not at.exception
+
     assert next(w for w in at.selectbox if w.label == 'Empresas por página').value == 20
     table = BeautifulSoup(contact_table(at), 'html.parser')
     assert len(table.select('tbody tr')) == 20
@@ -268,4 +274,30 @@ def test_page_size_and_filters_reset_page_and_batch_contains_only_visible_rows(t
     assert next(w for w in at.number_input if w.label == 'Página').value == 1
     assert len(BeautifulSoup(contact_table(at), 'html.parser').select('tbody tr')) == 45
     assert get_states(data['cnpj'].tolist(), init_db()) == []
+    assert not at.exception
+
+
+def test_explicit_marking_updates_database_and_removes_company_from_next_list(tmp_path, monkeypatch):
+    from src import contact_table as table_module
+    from src.state import get_reviews
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('DATABASE_URL', f"sqlite:///{tmp_path / 'confirmed.db'}")
+    (tmp_path / 'data').mkdir()
+    data = demo_data(now_local().date())
+    data['cnpj'] = ['00000000000191', '11222333000181', '04252011000110', '99999999999999']
+    data.to_parquet(tmp_path / 'data/companies.parquet', index=False)
+    value = [None]
+    monkeypatch.setattr(table_module, 'render_contact_table', lambda *args: value[0])
+    at = AppTest.from_file(str(APP)).run(timeout=15)
+    assert at.metric[0].value == '3'
+    value[0] = {'id': 'manual-one', 'action': 'mark_contacted', 'cnpjs': ['00000000000191']}
+    at.run()
+    assert not at.exception
+    assert at.metric[0].value == '2'
+    assert get_reviews(init_db())[0]['status'] == 'contatado'
+    assert get_states(['00000000000191'], init_db()) == []
+    at.run()  # O mesmo evento não é aplicado duas vezes.
+    assert len(get_reviews(init_db())) == 1
+    next(w for w in at.selectbox if w.label == 'Histórico de contato').set_value('Contatadas').run()
+    assert at.metric[0].value == '1'
     assert not at.exception

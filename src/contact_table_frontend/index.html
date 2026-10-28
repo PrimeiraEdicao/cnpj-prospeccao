@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body><script src="./table.js"></script><script>
+// Protocolo público dos componentes Streamlit V1 (apiVersion 1).
+// https://github.com/streamlit/streamlit/blob/develop/component-lib/src/streamlit.ts
+let identity;
+let acknowledged;
+let controller;
+function send(type, payload) {
+    window.parent.postMessage({isStreamlitMessage: true, type, ...payload}, "*");
+}
+window.addEventListener("message", event => {
+    if (event.source !== window.parent || !event.data || event.data.type !== "streamlit:render") return;
+    const args = event.data.args;
+    if (identity !== args.identity) {
+        identity = args.identity;
+        const parsed = new DOMParser().parseFromString(args.markup, "text/html");
+        document.head.querySelectorAll("style").forEach(style => style.remove());
+        parsed.head.querySelectorAll("style").forEach(style => document.head.append(style));
+        document.body.replaceChildren(...parsed.body.childNodes);
+        controller = window.initContactTable({onMark: cnpjs => send("streamlit:setComponentValue", {
+            value: {id: window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`, action: "mark_contacted", cnpjs}, dataType: "json"
+        })});
+    }
+    if (args.ack && acknowledged !== args.ack) {
+        acknowledged = args.ack;
+        controller.refresh();
+        const status = document.getElementById("batch-status");
+        if (status.textContent === "Salvando empresas contatadas…") {
+            status.textContent = "Confira o resultado da confirmação no aplicativo.";
+        }
+    }
+    send("streamlit:setFrameHeight", {height: args.height});
+});
+send("streamlit:componentReady", {apiVersion: 1});
+</script></body></html>

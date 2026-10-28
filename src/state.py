@@ -148,3 +148,23 @@ def get_reviews(engine=None):
     engine = engine or init_db()
     with engine.connect() as conn:
         return [dict(row) for row in conn.execute(text("SELECT * FROM company_reviews")).mappings()]
+
+
+def confirm_contacts(cnpjs, visible, engine=None, registry_writer=None) -> tuple[int, int]:
+    """Confirma só empresas selecionáveis da página atual, em uma transação.
+
+    A confirmação é independente de abertura e não inventa envio/entrega pelo WhatsApp.
+    """
+    from .reviews import import_cnpj
+    if not isinstance(cnpjs, list) or not cnpjs or len(cnpjs) > 100:
+        raise ValueError("Selecione de 1 a 100 empresas da página atual.")
+    if any(not isinstance(n, str) or import_cnpj(n) != n for n in cnpjs):
+        raise ValueError("A seleção contém um CNPJ inválido.")
+    numbers = list(dict.fromkeys(cnpjs))
+    allowed = set(visible.loc[~visible["reviewed"], "cnpj"].astype(str))
+    if not set(numbers).issubset(allowed):
+        raise ValueError("A seleção mudou ou contém uma empresa revisada. Atualize a lista.")
+    records = [{"cnpj": n, "status": "contatado", "source": "Confirmação manual no aplicativo"} for n in numbers]
+    if registry_writer is not None:
+        registry_writer(records)
+    return import_reviews(records, engine)

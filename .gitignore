@@ -4,6 +4,9 @@ node_modules/
 .venv/
 .venv-cnpj312/
 .env
+.streamlit/secrets.toml
+data/downloaded/
+data/active_snapshot.json
 *.pyc
 *.pyo
 *.log

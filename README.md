@@ -25,15 +25,17 @@ Não use `natureza_juridica == 2135` como sinônimo de MEI: `213-5` identifica *
 7. Usa **CNAE** para descrição e sinaliza escritórios/serviços contábeis.
 8. Salva uma base Parquet compacta em `data/companies.parquet`.
 9. O Streamlit permite filtrar por bairro, idade da empresa, CNAE, telefone e histórico de contato.
-10. Ao abrir o link de WhatsApp pelo app, a tentativa é registrada antes do redirecionamento.
+10. Os links abrem diretamente o WhatsApp Web. Após abordar as empresas, marque as selecionadas como contatadas para salvá-las e retirá-las das próximas listas.
 
 ## Escopo padrão
 
 A base atual é de **Governador Valadares/MG**, código Receita `4553`. A configuração persistente está em `config/scopes.json` e aceita vários municípios de várias UFs. O ETL percorre os ZIPs nacionais uma vez e retém os pares UF/município configurados.
 
-Para adicionar uma cidade, abra **Actions → Atualizar base Receita CNPJ → Run workflow** e preencha `adicionar_uf` e `adicionar_municipios`. Os códigos Receita têm **quatro dígitos**; não use o código IBGE de sete dígitos. É possível informar vários códigos da mesma UF separados por vírgula. O campo `nome_cidade` é opcional, e o nome da tabela Municípios da Receita prevalece. Deixe os campos vazios para atualizar apenas o escopo existente.
+Pela interface, abra **Cidades e atualização da Receita**, selecione o estado e o nome do município e clique em **Incluir cidade e atualizar base**. O aplicativo converte a seleção para o código Receita e solicita a carga em segundo plano. É necessário configurar os Secrets descritos na seção de hospedagem abaixo. Use **Verificar andamento** e, quando concluído, **Carregar última base pronta**. A base atual continua disponível enquanto a nova é preparada.
 
-A cidade será acrescentada a `config/scopes.json` **após a carga concluir com sucesso**, preservando Valadares e as demais cidades. As atualizações semestrais usam essa configuração. O filtro da interface lista somente cidades já presentes no Parquet; a seleção não baixa uma nova cidade.
+Como alternativa administrativa, abra **Actions → Atualizar base Receita CNPJ → Run workflow** e preencha `adicionar_uf` e `adicionar_municipios`. Os códigos Receita têm **quatro dígitos**; não use o código IBGE de sete dígitos. É possível informar vários códigos da mesma UF separados por vírgula. O campo `nome_cidade` é opcional, e o nome da tabela Municípios da Receita prevalece. Deixe os campos vazios para atualizar apenas o escopo existente.
+
+A cidade será acrescentada a `config/scopes.json` **após a carga concluir com sucesso**, preservando Valadares e as demais cidades. As atualizações semestrais usam essa configuração. O filtro **Cidade / UF** mostra as cidades já carregadas; o painel **Cidades e atualização da Receita** permite incluir uma nova. O catálogo `config/municipalities.csv` vem da [tabela oficial TOM/IBGE da Receita](https://www.gov.br/receitafederal/dados/municipios.csv/view), consultada em 28/10/2026 (5.570 municípios brasileiros). Atualize esse catálogo com `python -m scripts.update_city_catalog` quando a tabela oficial mudar.
 
 Alternativa no terminal:
 
@@ -149,7 +151,7 @@ Isso é mais seguro do que uma “proxy de nomes” genérica, porque o próprio
 
 A tabela permite marcar empresas e clicar em **Abrir WhatsApps selecionados (N)** para abrir uma aba por empresa. A lista começa com **20 empresas por página**, com opções de 50 e 100. Os links individuais para os telefones válidos continuam disponíveis. A abertura em lote usa um número por empresa, priorizando o celular provável.
 
-A saudação usa `America/Sao_Paulo`: **Bom dia** das 6h às 11h59, **Boa tarde** das 12h às 17h59 e **Boa noite** das 18h às 5h59. Ela é recalculada na abertura de cada contato, inclusive se a tabela tiver sido carregada antes da mudança de horário. É possível escolher uma saudação personalizada. O texto padrão inclui **Tudo bem?**:
+A saudação usa `America/Sao_Paulo`: **Bom dia** das 6h às 11h59, **Boa tarde** das 12h às 17h59 e **Boa noite** das 18h às 5h59. Na tabela, ela é recalculada no clique, inclusive se a lista tiver sido carregada antes da mudança de horário. A fila e a revisão individual usam a mensagem da prévia atual. É possível escolher uma saudação personalizada. O texto padrão inclui **Tudo bem?**:
 
 ```text
 {saudacao}! Tudo bem? Sou {remetente}. Nesse contato falo com {nome}?
@@ -157,9 +159,9 @@ A saudação usa `America/Sao_Paulo`: **Bom dia** das 6h às 11h59, **Boa tarde*
 
 A apresentação e a mensagem são editáveis no app. `CONTACT_SENDER` e `CONTACT_TEMPLATE` no `.env` ou Secrets definem os padrões para outros projetos. O nome pode ser revisado individualmente; sem nome identificado, usa-se “a pessoa responsável”.
 
-Na **Fila de contatos**, selecione empresas ou adicione a página inteira. Abra cada contato na mesma aba e use **Próximo contato** para avançar. A fila fica na sessão atual e acompanha os filtros; não envia mensagens nem registra tentativas ao adicionar ou avançar.
+Na **Fila de contatos**, selecione empresas ou adicione a página inteira. Os links abrem diretamente o WhatsApp Web. Use **Próximo contato** para avançar ou **Marcar contato da fila como contatado** para confirmar a abordagem e retirar a empresa da prospecção. A fila fica na sessão atual e acompanha os filtros.
 
-Ao abrir um link, o app valida CNPJ e telefone, registra a abertura no histórico e redireciona para `wa.me`. O `attempt_id` torna essa abertura idempotente. **Uma abertura não confirma envio ou entrega**: a mensagem deve ser conferida e enviada no WhatsApp. O histórico pode ser atualizado sem recarregar os dados.
+**Abrir WhatsApps selecionados** navega diretamente para `https://web.whatsapp.com/send`, sem abrir outra sessão Streamlit ou exigir o botão “Abrir WhatsApp manualmente”. Após as conversas, clique em **Marcar selecionadas como contatadas**. Essa confirmação é validada no servidor contra os CNPJs da página atual e salva com status `contatado` em `company_reviews`. Ela não inventa envio ou entrega. As confirmações retiram as empresas das próximas listas e se mantêm em novas cargas da Receita. O filtro **Contatadas** permite consultá-las, com links desativados. As antigas aberturas continuam no banco, mas a lista padrão **Não contatadas** depende das confirmações e revisões, não de simples cliques. Links antigos com `?contact=` mantêm compatibilidade; os novos não usam esse redirecionamento.
 
 ### Regras das atividades fora do foco
 
@@ -198,7 +200,7 @@ A lista `config/reviewed_cnpjs.csv` contém os **1.544 CNPJs únicos** das 50 pl
 
 Para novas listas, abra **Importar empresas já revisadas** na barra lateral. Envie ZIP com planilhas, Excel `.xlsx`, CSV com coluna `CNPJ` ou TXT com um CNPJ por linha. Confira os totais e selecione **Revisado anteriormente**, **Já contatado** ou **Fora do perfil**, conforme o lote. Clique em **Importar CNPJs revisados**. Os dígitos verificadores são validados; duplicatas não criam novos registros. A importação não altera o número de aberturas nem inventa mensagem, telefone ou data de envio. A data salva corresponde à importação da revisão.
 
-Novas importações feitas na interface ficam na tabela `company_reviews` do banco definido por `DATABASE_URL`. Use **Baixar lista de revisão** para guardar um CSV de backup com a união da lista versionada e das novas importações. Esse CSV pode ser reimportado sem perder o motivo de revisão. Em hospedagem com disco temporário, configure PostgreSQL persistente; uploads não fazem commits automáticos no GitHub.
+Novas importações feitas na interface ficam na tabela `company_reviews` do banco definido por `DATABASE_URL`. Use **Baixar lista de revisão** para guardar um CSV de backup com a união da lista versionada e das novas importações. Esse CSV pode ser reimportado sem perder o motivo de revisão. Sem PostgreSQL ou credencial do GitHub, esse banco fica no disco local da hospedagem. As confirmações feitas pelo botão também podem ser persistidas no repositório privado, conforme a seção de hospedagem. Uploads de listas devem ser guardados em backup ou incorporados ao registro versionado.
 
 Para incorporar uma nova lista ao próprio repositório, sem depender do banco de contatos:
 
@@ -221,7 +223,9 @@ Localmente, o padrão é SQLite:
 DATABASE_URL=sqlite:///data/contact_state.db
 ```
 
-Para deploy em **Streamlit Community Cloud**, o filesystem local não deve ser tratado como armazenamento permanente. Configure `DATABASE_URL` com PostgreSQL persistente (por exemplo, Supabase ou Neon) nos Secrets do app. O mesmo código funciona sem alteração.
+Em **Streamlit Community Cloud**, o disco local não é um armazenamento permanente. Antes do Supabase, configure `GITHUB_DATA_TOKEN` para persistir as confirmações em `state/contacted_cnpjs.csv` no repositório privado. O aplicativo combina esse registro com a lista de revisões e o SQLite, inclusive depois de um reinício. Escritas concorrentes usam o SHA do arquivo, mesclam os CNPJs e repetem em caso de conflito. Sem essa credencial nem banco externo, use **Baixar lista de revisão** como backup e reimporte após um reinício.
+
+O futuro `DATABASE_URL` do Supabase/PostgreSQL continua compatível com o mesmo código. Esta entrega é um protótipo **compartilhado**: ainda não tem login, assinatura ou separação do histórico por usuário. A confirmação de um usuário afeta as listas de todos nesta instância.
 
 ## Observações de escala
 
@@ -243,14 +247,41 @@ python -m pytest -q
 
 ### Abrir WhatsApps em lote
 
-- A lista começa com 20 empresas por página; escolha também 50 ou 100.
-- Marque as empresas na tabela ou use **Selecionar esta página**. O contador e o destaque das linhas acompanham a seleção.
-- Clique em **Abrir WhatsApps selecionados (N)**: será aberta uma aba por empresa, com um número por empresa, priorizando o celular provável. Os links individuais continuam disponíveis para escolher o outro telefone.
-- Permita **pop-ups e redirecionamentos** deste aplicativo no navegador. Se alguma abertura for bloqueada, ela continua selecionada; clique novamente depois de liberar os pop-ups. As abas que já abriram saem da seleção e não são repetidas pelo lote nesta lista.
-- A seleção vale apenas para a página visível e é limpa quando a lista é atualizada (página, filtros, mensagem ou aparência). Contatos revisados, sem telefone e dados de demonstração ficam desativados.
-- Cada aba usa a mesma rota de contato dos links individuais: valida CNPJ/telefone/revisão, atualiza a saudação e registra a abertura com ID idempotente. Selecionar, limpar ou ter uma abertura bloqueada não registra tentativa.
-- Confira a mensagem e confirme o envio em cada conversa do WhatsApp. A abertura da aba não confirma entrega nem envio.
+1. Escolha 20, 50 ou 100 empresas por página e marque as que deseja abordar, ou use **Selecionar esta página**.
+2. Clique em **Abrir WhatsApps selecionados (N)** para abrir uma aba por empresa, priorizando o celular provável. Os links individuais permitem escolher outro telefone.
+3. Permita pop-ups deste aplicativo no navegador. O botão repete somente as aberturas bloqueadas; não repete as que já abriram nesta lista.
+4. Depois das conversas, desmarque as empresas que não foram abordadas e clique em **Marcar selecionadas como contatadas**. As selecionadas ficam marcadas após abrir as abas justamente para essa confirmação.
+5. O aplicativo salva as confirmações e atualiza a lista automaticamente. Empresas revisadas/contatadas, registros sem telefone e dados fictícios não podem receber contato pela tabela.
 
-O controle do navegador pode apresentar abas ou janelas conforme suas preferências. O lote faz as aberturas diretamente no clique, sem temporizadores ou automação de envio.
+A seleção vale apenas para a página visível e é limpa ao atualizar a lista. Aberturas não marcam contato, e a confirmação manual não é um comprovante de envio/entrega. O controle do navegador pode apresentar abas ou janelas conforme suas preferências. Não há automação de envio.
 
-Testes da seleção e dos bloqueios de pop-up simulados: com as dependências Python instaladas, execute `npm ci` e `npm test` em `tests/frontend` (Node 22). O workflow executa esses testes junto com a suíte Python. Esses testes de DOM não substituem a verificação das permissões de pop-up no navegador usado em produção.
+Testes de DOM e do protocolo do componente: `npm ci` e `npm test` em `tests/frontend` (Node 22), após instalar as dependências Python. O workflow executa esses testes junto com a suíte Python. Os testes simulam pop-ups; a permissão real deve ser verificada no navegador usado.
+
+## Publicar no Streamlit Community Cloud
+
+No [Streamlit Community Cloud](https://share.streamlit.io/), entre na sua conta e escolha **Create app / Deploy a public app from GitHub** (ou a opção de repositório privado disponível na sua conta). Configure:
+
+| Campo | Valor |
+| --- | --- |
+| Repository | `PrimeiraEdicao/cnpj-prospeccao` |
+| Branch | `main` |
+| Main file path | `app.py` |
+| Python | `3.12` em Advanced settings |
+
+A base `data/companies.parquet` já faz parte do repositório. A publicação não precisa rodar a carga nacional novamente. O aplicativo usa `requirements.txt`; Node/npm são usados apenas pelos testes e não são necessários para executar o app.
+
+Em **Advanced settings → Secrets**, use [.streamlit/secrets.toml.example](.streamlit/secrets.toml.example) como referência:
+
+```toml
+GITHUB_DATA_TOKEN = "SEU_TOKEN_RESTRITO_A_ESTE_REPOSITORIO"
+GITHUB_DATA_REPOSITORY = "PrimeiraEdicao/cnpj-prospeccao"
+GITHUB_DATA_BRANCH = "main"
+# Opcional, para restringir as cargas enquanto o app não tem login:
+# DATA_UPDATE_ADMIN_KEY = "SUA_CHAVE"
+```
+
+Crie um token fine-grained restrito a este repositório, com **Actions: read and write** para solicitar/acompanhar as cargas e **Contents: read and write** para ler a base e salvar o histórico de contatos. O token fica somente no servidor; não é passado ao componente do navegador. Não envie credenciais pelo chat nem versione `.streamlit/secrets.toml`.
+
+O processamento pesado continua no GitHub Actions. O pedido feito pela interface tem um identificador para acompanhar o job correto, impede duplicação imediata e recusa outra carga enquanto há uma em andamento. Se a carga falhar, a base anterior continua disponível. O botão de carregar baixa o Parquet e os metadados do mesmo commit, verifica sua integridade e só ativa a nova versão após validar ambos. Essa troca preserva o histórico de contatos.
+
+Para testar sem a credencial, o aplicativo abre a base já incluída e permite links diretos, seleção e confirmações no SQLite local. A inclusão de cidades e o histórico durável pelo GitHub ficam desativados até configurar os Secrets. A integração com login, histórico individual e cobrança ficará para a etapa do Supabase.
