@@ -14,14 +14,16 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
-from src.contact_table import build_contact_table
+from src.contact_table import render_contact_table
+from src.data_updates import DataUpdateError, active_data_paths
+from src.data_management_ui import render_data_management, remote_reviews
 from src.demo import demo_data
-from src.prospecting import (DEFAULT_TEMPLATE, EXCLUSIONS, PORTE_LABELS, cnpj_query, contact_link,
+from src.prospecting import (DEFAULT_TEMPLATE, EXCLUSIONS, PORTE_LABELS, cnpj_query,
                              filter_data, greeting, now_local, preferred_phone,
-                             prepare_data, render_message)
+                             prepare_data, render_message, whatsapp_link)
 from src.reviews import (REVIEW_LABELS, apply_reviews, combine_reviews, export_reviews,
                          load_review_registry, parse_review_files)
-from src.state import get_reviews, get_states, import_reviews, init_db, record_attempt
+from src.state import get_reviews, get_states, import_reviews, init_db, record_attempt, confirm_contacts
 from src.theme import theme_css
 from src.utils import age_years, digits, normalize_text
 
@@ -98,10 +100,16 @@ def action_link(url: str, label: str) -> str:
             f'target="cnpj-whatsapp">{html.escape(label)}</a>')
 
 
-def render_table(page: pd.DataFrame, template: str, sender: str, salutation: str | None, demo: bool):
-    app_url = getattr(getattr(st, "context", None), "url", "") or ""
-    markup = build_contact_table(page, template, sender, salutation, demo, appearance, app_url)
-    components.html(markup, height=min(800, 300 + len(page) * 88), scrolling=True)
+def save_contacted(numbers, visible, engine):
+    try:
+        writer = data_client.save_contacts if data_client else None
+        added, existing = confirm_contacts(numbers, visible, engine, registry_writer=writer)
+        remote_reviews.clear()
+        st.session_state["contact_result"] = f"{added} empresa(s) marcada(s) como contatada(s); {existing} já registrada(s). A lista foi atualizada."
+        st.rerun()
+    except (ValueError, DataUpdateError) as exc:
+        st.session_state["contact_error"] = str(exc)
+        st.rerun()
 
 
 with st.sidebar:
@@ -114,6 +122,15 @@ st.markdown(f'<div class="brand-header"><img src="data:image/svg+xml;base64,{log
 st.markdown('<div class="eyebrow">INTELIGÊNCIA PARA SEU PRÓXIMO CONTATO</div>', unsafe_allow_html=True)
 st.title("Encontre empresas. Inicie conversas.")
 st.caption("Escolha seu território, refine o público e organize seus contatos em um só lugar.")
+
+data_client = render_data_management(Path.cwd(), _secret_or_env)
+DATA_PATH, META_PATH = active_data_paths(Path.cwd())
+if message := st.session_state.pop("base_loaded_message", None):
+    st.success(message)
+if message := st.session_state.pop("contact_result", None):
+    st.success(message)
+if message := st.session_state.pop("contact_error", None):
+    st.error(message)
 
 meta = {}
 if META_PATH.exists():
@@ -133,7 +150,13 @@ else:
     df = load_data(str(DATA_PATH), (version.st_mtime_ns, version.st_size))
     engine = contact_engine(_secret_or_env("DATABASE_URL", "sqlite:///data/contact_state.db"))
 df = prepare_data(df, meta)
-reviews = combine_reviews(load_review_registry(REVIEW_PATH), [] if demo_mode else get_reviews(engine))
+registry = combine_reviews(load_review_registry(REVIEW_PATH), load_review_registry(ROOT / "state/contacted_cnpjs.csv"))
+if data_client:
+    try:
+        registry = combine_reviews(registry, remote_reviews(_secret_or_env("GITHUB_DATA_TOKEN"), data_client.repository, data_client.branch))
+    except DataUpdateError as exc:
+        st.warning(f"Não foi possível sincronizar o histórico remoto: {exc}")
+reviews = combine_reviews(registry, [] if demo_mode else get_reviews(engine))
 df = apply_reviews(df, reviews)
 if not demo_mode and handle_contact_redirect(df, engine):
     st.stop()
@@ -142,7 +165,9 @@ if meta and not demo_mode:
     st.caption(f"Receita Federal · {meta.get('receita_release', '—')} · {len(df):,} estabelecimentos ativos não-MEI na base")
 
 if not demo_mode:
-    st.button("Atualizar histórico", help="Recarrega as aberturas de contato registradas em outras abas.")
+    if st.button("Atualizar histórico", help="Recarrega as confirmações de contato e as revisões."):
+        remote_reviews.clear()
+        st.rerun()
 states = pd.DataFrame() if demo_mode else pd.DataFrame(get_states(df["cnpj"].astype(str).tolist(), engine=engine))
 if not states.empty:
     df = df.merge(states, on="cnpj", how="left")
@@ -182,7 +207,10 @@ with st.sidebar:
                 st.error(f"Não foi possível importar: {exc}")
         st.download_button("Baixar lista de revisão", export_reviews(reviews), "cnpjs_revisados.csv",
                            "text/csv", disabled=demo_mode or not reviews)
-        st.caption("Novas importações são salvas no banco de contatos. Guarde o CSV como backup. Na hospedagem, use um banco persistente.")
+        st.caption("Use ‘Baixar lista de revisão’ como backup das importações e dos contatos confirmados.")
+        if not data_client and not _secret_or_env("DATABASE_URL").startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
+            st.caption("Sem banco externo ou GITHUB_DATA_TOKEN, o histórico fica no SQLite local e pode se perder quando a hospedagem reiniciar. Guarde o backup para reimportar.")
+    st.caption("Protótipo compartilhado: nesta versão, contatos e revisões são comuns a quem usa este aplicativo. O controle individual dependerá do login futuro.")
     st.subheader("Seu público")
     cities = sorted(df["cidade_label"].unique())
     city_sel = st.multiselect("Cidade / UF", cities, help="Sem seleção: todas as cidades já carregadas.")
@@ -202,14 +230,12 @@ with st.sidebar:
     exclusions = st.multiselect("Remover também", list(EXCLUSIONS), default=list(EXCLUSIONS), format_func=lambda k: EXCLUSIONS[k]["label"])
     only_phone = st.checkbox("Somente com telefone", value=True)
     only_mobile = st.checkbox("Somente celular provável", value=False)
-    contact_status = st.selectbox("Histórico de contato", ["Nunca tentado", "Todos", "Já tentado"])
+    contact_status = st.selectbox("Histórico de contato", ["Não contatadas", "Todos", "Contatadas"])
     hide_reviewed = st.checkbox("Ocultar empresas já revisadas", value=True)
     st.caption(f"Lista de revisão: {len(reviews):,} CNPJs; {int(df['reviewed'].sum()):,} presentes nesta base. Ao exibir, os links de contato continuam desativados.")
     search = st.text_input("Buscar empresa/CNPJ/CNAE", placeholder="Nome, CNPJ ou atividade")
     st.caption("CNPJ aceito: 12.345.678/0001-90 ou 12345678000190 (14 dígitos). A busca respeita os filtros selecionados.")
-    with st.expander("Como incluir outra cidade"):
-        st.write("No GitHub: Actions → Atualizar base Receita CNPJ → Run workflow. Informe a UF e o código do município na Receita. A cidade será adicionada à configuração e à próxima carga.")
-        st.caption("Os códigos da Receita têm quatro dígitos e diferem dos códigos de sete dígitos do IBGE. A carga processa os arquivos nacionais e pode demorar.")
+
 
 filtered = filter_data(df, cities=city_sel, neighborhoods=bairro_sel, portes=portes, exclusions=exclusions,
                        exclude_accounting=exclude_accounting, min_age=min_age,
@@ -240,7 +266,7 @@ with st.expander("Mensagem e saudação", expanded=True):
     except (ValueError, KeyError) as exc:
         st.error(str(exc))
         st.stop()
-    st.caption("A saudação automática é atualizada ao abrir cada contato, inclusive quando a página ficou aberta por horas.")
+    st.caption("Na tabela, a saudação automática é atualizada no clique, inclusive quando a página ficou aberta por horas. A fila e a revisão individual usam a prévia atual.")
 
 st.subheader("Empresas para contato")
 st.caption("Selecione empresas na lista para abrir vários WhatsApps de uma vez, ou use o link individual. O envio é confirmado por você em cada conversa.")
@@ -266,7 +292,11 @@ if st.session_state.get("filter_signature") != signature:
 page_num = st.number_input("Página", min_value=1, max_value=pages, value=1, step=1, key="page")
 page = filtered.iloc[(page_num - 1) * page_size:page_num * page_size]
 st.caption(f"Página {page_num} de {pages} · até {page_size} empresas por página")
-render_table(page, template, sender, salutation, demo_mode)
+event = render_contact_table(page, template, sender, salutation, demo_mode, appearance)
+if isinstance(event, dict) and event.get("id") and event.get("id") != st.session_state.get("last_contact_event"):
+    st.session_state["last_contact_event"] = event["id"]
+    if event.get("action") == "mark_contacted" and not demo_mode:
+        save_contacted(event.get("cnpjs"), page, engine)
 
 with st.expander("Fila de contatos — organize vários de uma vez"):
     labels = {str(r.cnpj): f"{r.razao_social} · {r.bairro} · {r.cnpj}" for r in page.itertuples() if not r.reviewed}
@@ -288,15 +318,17 @@ with st.expander("Fila de contatos — organize vários de uma vez"):
         phone = preferred_phone(current)
         if phone:
             st.code(render_message(template, current["primeiro_nome"], sender, salutation), language=None)
-            st.markdown(action_link(contact_link(current, phone, template, sender, salutation=salutation), "Abrir contato da fila"), unsafe_allow_html=True)
+            st.markdown(action_link(whatsapp_link(current, phone, template, sender, salutation=salutation), "Abrir contato da fila"), unsafe_allow_html=True)
         else:
             st.warning("Este registro não tem telefone válido.")
         if st.button("Próximo contato"):
             st.session_state["contact_queue"] = queue[1:]
             st.rerun()
+        if st.button("Marcar contato da fila como contatado", disabled=demo_mode):
+            save_contacted([str(current["cnpj"])], filtered, engine)
     else:
         st.caption("Selecione empresas ou adicione a página inteira. A fila acompanha os filtros atuais e fica disponível nesta sessão.")
-    st.caption("Adicionar à fila ou avançar não registra envio. O histórico registra a abertura de cada contato.")
+    st.caption("Abrir ou avançar não marca contato. Confirme as empresas abordadas para retirá-las das próximas listas.")
 
 with st.expander("Revisar nome e telefone de uma empresa"):
     options = filtered["cnpj"].astype(str).tolist()
@@ -313,14 +345,16 @@ with st.expander("Revisar nome e telefone de uma empresa"):
     if row["reviewed"]:
         st.info(f"{row['review_label']}. Este contato foi retirado da prospecção.")
     elif demo_mode:
-        st.button("Abrir WhatsApp e registrar tentativa", disabled=True)
+        st.button("Abrir WhatsApp", disabled=True)
     elif phones:
         phone = st.selectbox("Número", phones)
-        st.markdown(action_link(contact_link(row, phone, template, sender, name=contact_name, salutation=salutation), "Abrir WhatsApp e registrar tentativa"), unsafe_allow_html=True)
+        st.markdown(action_link(whatsapp_link(row, phone, template, sender, name=contact_name, salutation=salutation), "Abrir WhatsApp"), unsafe_allow_html=True)
     else:
         st.warning("Não há telefone válido neste registro.")
+    if st.button("Marcar esta empresa como contatada", disabled=demo_mode or bool(row["reviewed"]), key="mark_manual"):
+        save_contacted([str(row["cnpj"])], filtered, engine)
 
 with st.expander("Sobre a abertura em lote e o envio"):
-    st.write("A seleção na tabela abre uma aba por empresa. Se o navegador bloquear alguma aba, permita pop-ups deste aplicativo e tente os contatos que continuam selecionados. O histórico registra a abertura do contato, não a confirmação do envio.")
+    st.write("Os links abrem diretamente o WhatsApp Web, sem outra página deste aplicativo. Após as conversas, marque as empresas selecionadas como contatadas. A confirmação atualiza o histórico e retira essas empresas das próximas listas. Abrir uma aba não confirma o envio da mensagem.")
     st.write("Para enviar sem confirmar cada conversa, a integração adequada é a WhatsApp Business Platform (Cloud API), com contatos que autorizaram receber mensagens e modelos aprovados.")
     st.caption("A base pública do CNPJ não registra essa autorização. A integração de envio depende de configurar a conta/API e uma lista autorizada. Conta verificada também está sujeita às regras do WhatsApp.")

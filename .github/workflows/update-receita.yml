@@ -1,8 +1,13 @@
 name: Atualizar base Receita CNPJ
+run-name: "CNPJ | ${{ inputs.nome_cidade || 'cidades cadastradas' }} | ${{ inputs.solicitacao || github.event_name }}"
 
 on:
   workflow_dispatch:
     inputs:
+      solicitacao:
+        description: "Identificador da solicitação feita pelo aplicativo"
+        required: false
+        default: ""
       adicionar_uf:
         description: "UF da nova cidade (vazio: atualizar apenas as cidades configuradas)"
         required: false
