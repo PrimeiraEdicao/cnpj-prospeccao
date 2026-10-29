@@ -1,0 +1,41 @@
+name: cnpj-prospeccao
+services:
+  app:
+    image: ${APP_IMAGE:-cnpj-prospeccao:local}
+    build: .
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      APP_ENV: production
+      AUTH_MODE: supabase
+      DATA_ROOT: /var/lib/cnpj
+    expose: ["8501"]
+    volumes:
+      - snapshots:/var/lib/cnpj
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=256m
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Defina APP_DOMAIN no arquivo .env.production}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app: {condition: service_healthy}
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+volumes:
+  snapshots:
+  caddy_data:
+  caddy_config:

@@ -35,7 +35,9 @@ fi
     'import sys; assert sys.version_info[:2] == (3, 12), "O projeto requer Python 3.12"; print("Python do app:", sys.version.split()[0])'
 
 # O PyArrow tem wheel para 3.12. Nunca tenta compilar Arrow/C++ por engano.
-"$CNPJ_VENV/bin/python" -m pip install --only-binary=pyarrow -r requirements.txt
+CNPJ_REQUIREMENTS=requirements.txt
+[[ ! -f requirements.lock ]] || CNPJ_REQUIREMENTS=requirements.lock
+"$CNPJ_VENV/bin/python" -m pip install --only-binary=pyarrow -r "$CNPJ_REQUIREMENTS"
 
 if [[ "${1:-}" == "--setup-only" ]]; then
     exit 0

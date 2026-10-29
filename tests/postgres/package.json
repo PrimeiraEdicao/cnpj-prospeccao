@@ -1,0 +1,11 @@
+{
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.13",
+    "pg": "8.16.3"
+  },
+  "name": "cnpj-rls-tests",
+  "private": true,
+  "scripts": {
+    "test": "node --test rls.test.cjs"
+  }
+}

@@ -1,0 +1,16 @@
+[Unit]
+Description=Backup criptografado do PostgreSQL CNPJ
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+User=cnpj-backup
+WorkingDirectory=/opt/cnpj-prospeccao
+EnvironmentFile=/etc/cnpj-prospeccao/backup.env
+ExecStart=/usr/bin/python3 /opt/cnpj-prospeccao/scripts/backup_database.py backup --directory /var/backups/cnpj
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/backups/cnpj
+PrivateTmp=true
