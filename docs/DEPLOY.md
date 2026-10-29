@@ -2,6 +2,20 @@
 
 Esta versão mantém a interface Streamlit e a base pública Parquet. Supabase Auth identifica cada usuário, e PostgreSQL guarda as revisões, confirmações e preferências com RLS. Novos cadastros ficam **pendentes** até um administrador liberar o acesso. Não há cobrança automática nesta entrega.
 
+## Projeto provisionado para este repositório
+
+- Nome: `cnpj-prospeccao`; região: São Paulo (`sa-east-1`).
+- Project ref: `xqlwbhagjopqwpvjwzwd`.
+- [Abrir o painel do projeto](https://supabase.com/dashboard/project/xqlwbhagjopqwpvjwzwd).
+- API URL: `https://xqlwbhagjopqwpvjwzwd.supabase.co`.
+- Migração aplicada: `20261029162911_user_accounts_and_isolated_history`, correspondente ao arquivo em `supabase/migrations/`.
+
+As seis tabelas do aplicativo foram criadas com RLS, políticas de isolamento e sem leitura para `anon`. Os Security Advisors não apontaram problemas no provisionamento. Os índices ainda sem uso são esperados em um banco vazio; [referência do aviso informativo](https://supabase.com/docs/guides/database/database-linter?lint=0005_unused_index).
+
+O projeto não contém usuários nem histórico importado. Configurar Secrets do Streamlit, templates/SMTP do Auth, ativar o primeiro administrador e importar o legado são etapas separadas. O código da integração já foi incorporado à `main` pelo PR #3. As instruções abaixo também permitem recriar o ambiente em outro projeto.
+
+Ao vincular a CLI ao projeto acima, `db push --dry-run` deve reconhecer esta migração como já aplicada. O nome do arquivo foi alinhado à versão registrada pelo Supabase; não reaplique o SQL manualmente nem altere o histórico remoto para criar uma segunda cópia da mesma migração. Nenhuma chave de API ou credencial é armazenada neste documento.
+
 ## 1. Preparar o Supabase
 
 Use um projeto exclusivo para esta aplicação, inicialmente de homologação. O aplicativo usa apenas **Project URL** e **publishable key**, encontradas no painel do projeto, em **Connect / API Keys**. A antiga chave `anon` também é aceita. Não coloque `service_role`, `sb_secret_...`, senha SQL ou chave de assinatura JWT no aplicativo.
