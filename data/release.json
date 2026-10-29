@@ -1,6 +1,6 @@
 {
-  "receita_release": "2026-09",
-  "catalog_url": "https://dados-abertos-rf-cnpj.casadosdados.com.br/arquivos/2026-09-14/",
+  "receita_release": "2026-10",
+  "catalog_url": "https://arquivos.receitafederal.gov.br/public.php/webdav/2026-10/",
   "zip_catalog": {
     "Estabelecimentos": 10,
     "Empresas": 10,
@@ -9,13 +9,25 @@
     "Cnaes": 1,
     "Qualificacoes": 1
   },
-  "uf": "MG",
-  "municipio_code": "4553",
-  "rows": 18276,
+  "uf": "MULTIPLOS",
+  "municipio_code": "",
+  "scopes": [
+    {
+      "uf": "MG",
+      "municipio_code": "4553",
+      "nome": "GOVERNADOR VALADARES"
+    },
+    {
+      "uf": "MG",
+      "municipio_code": "4625",
+      "nome": "IPATINGA"
+    }
+  ],
+  "rows": 35631,
   "non_mei_rule": "opcao_pelo_mei != 'S' na tabela Simples, join por CNPJ básico",
   "accounting_cnaes": [
     "6920601",
     "6920602"
   ],
-  "generated_at_utc": "2026-10-06T11:26:01.555308+00:00"
+  "generated_at_utc": "2026-10-29T18:56:15.545260+00:00"
 }
