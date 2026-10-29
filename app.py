@@ -14,6 +14,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
+from src.auth_ui import access_gate, admin_accounts
+from src.user_store import StoreError
 from src.contact_table import render_contact_table
 from src.data_updates import DataUpdateError, active_data_paths
 from src.data_management_ui import render_data_management, remote_reviews
@@ -85,8 +87,11 @@ def handle_contact_redirect(df: pd.DataFrame, engine):
     except (ValueError, KeyError) as exc:
         st.error(f"Mensagem inválida: {exc}")
         return True
-    record_attempt(attempt_id=str(attempt_id), cnpj=str(cnpj), phone=str(phone),
-                   contact_name=name, message=message, engine=engine)
+    if store is not None:
+        store.record_attempt(str(attempt_id), str(cnpj), str(phone), name, message)
+    else:
+        record_attempt(attempt_id=str(attempt_id), cnpj=str(cnpj), phone=str(phone),
+                       contact_name=name, message=message, engine=engine)
     wa_url = f"https://wa.me/{urllib.parse.quote(str(phone))}?text={urllib.parse.quote(message)}"
     st.caption("Abertura registrada. Abrindo WhatsApp…")
     components.html(f"<script>window.parent.location.replace({json.dumps(wa_url)});</script>", height=0)
@@ -102,15 +107,30 @@ def action_link(url: str, label: str) -> str:
 
 def save_contacted(numbers, visible, engine):
     try:
-        writer = data_client.save_contacts if data_client else None
-        added, existing = confirm_contacts(numbers, visible, engine, registry_writer=writer)
+        if store is not None:
+            added, existing = store.confirm_contacts(numbers, visible)
+        else:
+            writer = data_client.save_contacts if data_client else None
+            added, existing = confirm_contacts(numbers, visible, engine, registry_writer=writer)
         remote_reviews.clear()
         st.session_state["contact_result"] = f"{added} empresa(s) marcada(s) como contatada(s); {existing} já registrada(s). A lista foi atualizada."
         st.rerun()
-    except (ValueError, DataUpdateError) as exc:
+    except (ValueError, DataUpdateError, StoreError) as exc:
         st.session_state["contact_error"] = str(exc)
         st.rerun()
 
+
+store = access_gate(_secret_or_env)
+preferences = {}
+if store is not None:
+    try:
+        preferences = store.preferences()
+        if st.session_state.get("preferences_for") != store.user_id:
+            st.session_state["appearance"] = preferences.get("appearance", "Claro") if preferences.get("appearance") in {"Claro", "Escuro"} else "Claro"
+            st.session_state["preferences_for"] = store.user_id
+    except StoreError as exc:
+        st.error(str(exc))
+        st.stop()
 
 with st.sidebar:
     appearance = st.radio("Aparência", ["Claro", "Escuro"], horizontal=True, key="appearance")
@@ -123,8 +143,14 @@ st.markdown('<div class="eyebrow">INTELIGÊNCIA PARA SEU PRÓXIMO CONTATO</div>'
 st.title("Encontre empresas. Inicie conversas.")
 st.caption("Escolha seu território, refine o público e organize seus contatos em um só lugar.")
 
-data_client = render_data_management(Path.cwd(), _secret_or_env)
-DATA_PATH, META_PATH = active_data_paths(Path.cwd())
+data_root = Path(_secret_or_env("DATA_ROOT", str(Path.cwd())))
+try:
+    admin_accounts(store)
+    data_client = render_data_management(data_root, _secret_or_env, store=store)
+except StoreError as exc:
+    st.error(str(exc))
+    st.stop()
+DATA_PATH, META_PATH = active_data_paths(data_root, Path.cwd())
 if message := st.session_state.pop("base_loaded_message", None):
     st.success(message)
 if message := st.session_state.pop("contact_result", None):
@@ -148,15 +174,22 @@ if demo_mode:
 else:
     version = DATA_PATH.stat()
     df = load_data(str(DATA_PATH), (version.st_mtime_ns, version.st_size))
-    engine = contact_engine(_secret_or_env("DATABASE_URL", "sqlite:///data/contact_state.db"))
+    engine = contact_engine(_secret_or_env("DATABASE_URL", "sqlite:///data/contact_state.db")) if store is None else None
 df = prepare_data(df, meta)
-registry = combine_reviews(load_review_registry(REVIEW_PATH), load_review_registry(ROOT / "state/contacted_cnpjs.csv"))
-if data_client:
+if store is not None:
     try:
-        registry = combine_reviews(registry, remote_reviews(_secret_or_env("GITHUB_DATA_TOKEN"), data_client.repository, data_client.branch))
-    except DataUpdateError as exc:
-        st.warning(f"Não foi possível sincronizar o histórico remoto: {exc}")
-reviews = combine_reviews(registry, [] if demo_mode else get_reviews(engine))
+        reviews = store.get_reviews()
+    except StoreError as exc:
+        st.error(str(exc))
+        st.stop()
+else:
+    registry = combine_reviews(load_review_registry(REVIEW_PATH), load_review_registry(ROOT / "state/contacted_cnpjs.csv"))
+    if data_client:
+        try:
+            registry = combine_reviews(registry, remote_reviews(_secret_or_env("GITHUB_DATA_TOKEN"), data_client.repository, data_client.branch))
+        except DataUpdateError as exc:
+            st.warning(f"Não foi possível sincronizar o histórico remoto: {exc}")
+    reviews = combine_reviews(registry, [] if demo_mode else get_reviews(engine))
 df = apply_reviews(df, reviews)
 if not demo_mode and handle_contact_redirect(df, engine):
     st.stop()
@@ -168,7 +201,11 @@ if not demo_mode:
     if st.button("Atualizar histórico", help="Recarrega as confirmações de contato e as revisões."):
         remote_reviews.clear()
         st.rerun()
-states = pd.DataFrame() if demo_mode else pd.DataFrame(get_states(df["cnpj"].astype(str).tolist(), engine=engine))
+try:
+    states = pd.DataFrame() if demo_mode else pd.DataFrame(store.get_states(df["cnpj"].astype(str).tolist()) if store else get_states(df["cnpj"].astype(str).tolist(), engine=engine))
+except StoreError as exc:
+    st.error(str(exc))
+    st.stop()
 if not states.empty:
     df = df.merge(states, on="cnpj", how="left")
 else:
@@ -198,19 +235,19 @@ with st.sidebar:
                     preview["status"] = preview["status"].map(REVIEW_LABELS)
                     st.dataframe(preview, hide_index=True)
                     if st.button("Importar CNPJs revisados"):
-                        added, existing = import_reviews(report.records.values(), engine)
+                        added, existing = store.import_reviews(report.records.values()) if store else import_reviews(report.records.values(), engine)
                         st.session_state["review_import_result"] = f"{added} novos registros salvos; {existing} já estavam importados. A lista acompanha as próximas cargas da Receita."
                         st.rerun()
                 else:
                     st.warning("Nenhum CNPJ válido encontrado. Use a coluna CNPJ ou uma lista de 14 dígitos.")
-            except (ValueError, zipfile.BadZipFile, OSError) as exc:
+            except (ValueError, StoreError, zipfile.BadZipFile, OSError) as exc:
                 st.error(f"Não foi possível importar: {exc}")
         st.download_button("Baixar lista de revisão", export_reviews(reviews), "cnpjs_revisados.csv",
                            "text/csv", disabled=demo_mode or not reviews)
         st.caption("Use ‘Baixar lista de revisão’ como backup das importações e dos contatos confirmados.")
-        if not data_client and not _secret_or_env("DATABASE_URL").startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
+        if store is None and not data_client and not _secret_or_env("DATABASE_URL").startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
             st.caption("Sem banco externo ou GITHUB_DATA_TOKEN, o histórico fica no SQLite local e pode se perder quando a hospedagem reiniciar. Guarde o backup para reimportar.")
-    st.caption("Protótipo compartilhado: nesta versão, contatos e revisões são comuns a quem usa este aplicativo. O controle individual dependerá do login futuro.")
+    st.caption("Contatos, revisões e preferências pertencem à sua conta." if store else "Modo de desenvolvimento: histórico compartilhado, sem autenticação.")
     st.subheader("Seu público")
     cities = sorted(df["cidade_label"].unique())
     city_sel = st.multiselect("Cidade / UF", cities, help="Sem seleção: todas as cidades já carregadas.")
@@ -256,9 +293,9 @@ with st.expander("Mensagem e saudação", expanded=True):
         mode = st.selectbox("Saudação", ["Automática pelo horário", "Personalizada"])
         manual = st.text_input("Saudação personalizada", value="Olá", disabled=mode != "Personalizada")
         salutation = manual.strip() if mode == "Personalizada" else None
-        sender = st.text_input("Sua apresentação", value=_secret_or_env("CONTACT_SENDER", "Daniel do Sebrae"))
+        sender = st.text_input("Sua apresentação", value=preferences.get("sender", _secret_or_env("CONTACT_SENDER", "Daniel do Sebrae")))
     with right:
-        template = st.text_area("Mensagem", value=_secret_or_env("CONTACT_TEMPLATE", DEFAULT_TEMPLATE), height=110,
+        template = st.text_area("Mensagem", value=preferences.get("template", _secret_or_env("CONTACT_TEMPLATE", DEFAULT_TEMPLATE)), height=110,
                                 help="Campos disponíveis: {saudacao}, {nome} e {remetente}.")
         st.caption(f"Agora: {greeting(now)} · {now:%H:%M} em Brasília. Bom dia das 6h às 11h59; boa tarde até 17h59; boa noite das 18h às 5h59.")
     try:
@@ -266,6 +303,12 @@ with st.expander("Mensagem e saudação", expanded=True):
     except (ValueError, KeyError) as exc:
         st.error(str(exc))
         st.stop()
+    if store is not None and st.button("Salvar minhas preferências", key="save_preferences"):
+        try:
+            store.save_preferences({"sender": sender, "template": template, "appearance": appearance})
+            st.success("Suas preferências foram salvas.")
+        except (StoreError, ValueError) as exc:
+            st.error(str(exc))
     st.caption("Na tabela, a saudação automática é atualizada no clique, inclusive quando a página ficou aberta por horas. A fila e a revisão individual usam a prévia atual.")
 
 st.subheader("Empresas para contato")

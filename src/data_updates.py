@@ -73,7 +73,7 @@ class GitHubDataClient:
         return self._request("GET", f"actions/workflows/{WORKFLOW}/runs",
                              params={"branch": self.branch, "per_page": 30}).json()["workflow_runs"]
 
-    def request_update(self, scope=None):
+    def request_update(self, scope=None, *, request_id=None):
         scope = checked_scope(scope) if scope else None
         with LOCK:
             key = (self.repository, self.branch)
@@ -82,7 +82,9 @@ class GitHubDataClient:
             runs = self.runs()
             if any(r.get("event") != "pull_request" and r["status"] in ACTIVE_STATUSES for r in runs):
                 raise DataUpdateError("Já existe uma atualização ou validação em andamento. Aguarde a conclusão antes de solicitar outra.")
-            request_id = uuid.uuid4().hex
+            request_id = request_id or uuid.uuid4().hex
+            if not re.fullmatch(r"[0-9a-f]{32}", request_id):
+                raise ValueError("Solicitação inválida.")
             inputs = {"solicitacao": request_id}
             if scope:
                 inputs.update(adicionar_uf=scope["uf"], adicionar_municipios=scope["municipio_code"], nome_cidade=scope["nome"])
@@ -152,8 +154,9 @@ class GitHubDataClient:
         return install_snapshot(root, head, raw_data, raw_meta)
 
 
-def active_data_paths(root: Path) -> tuple[Path, Path]:
+def active_data_paths(root: Path, bundled_root: Path | None = None) -> tuple[Path, Path]:
     data = root / "data"
+    bundled_data = (bundled_root or root) / "data"
     pointer = data / "active_snapshot.json"
     if pointer.exists():
         try:
@@ -162,16 +165,16 @@ def active_data_paths(root: Path) -> tuple[Path, Path]:
                 folder = data / "downloaded" / version
                 if (folder / "companies.parquet").is_file() and (folder / "release.json").is_file():
                     # Um redeploy pode trazer uma competência mais recente no próprio repositório.
-                    bundled_meta = data / "release.json"
-                    if bundled_meta.exists() and (data / "companies.parquet").is_file():
+                    bundled_meta = bundled_data / "release.json"
+                    if bundled_meta.exists() and (bundled_data / "companies.parquet").is_file():
                         bundled = json.loads(bundled_meta.read_text()).get("generated_at_utc", "")
                         local = json.loads((folder / "release.json").read_text()).get("generated_at_utc", "")
                         if bundled and local and pd.Timestamp(bundled) > pd.Timestamp(local):
-                            return data / "companies.parquet", bundled_meta
+                            return bundled_data / "companies.parquet", bundled_meta
                     return folder / "companies.parquet", folder / "release.json"
         except (ValueError, KeyError, TypeError, OSError):
             pass
-    return data / "companies.parquet", data / "release.json"
+    return bundled_data / "companies.parquet", bundled_data / "release.json"
 
 
 def install_snapshot(root: Path, version: str, parquet: bytes, metadata: bytes):

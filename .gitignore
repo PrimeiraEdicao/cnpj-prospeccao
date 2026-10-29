@@ -4,6 +4,11 @@ node_modules/
 .venv/
 .venv-cnpj312/
 .env
+.env.production
+.env.backup
+backups/
+*.age
+*.dump
 .streamlit/secrets.toml
 data/downloaded/
 data/active_snapshot.json
@@ -18,3 +23,5 @@ data/*.db-journal
 # O parquet pode ser versionado em repositório privado se couber no limite do GitHub.
 # Descomente a linha abaixo se preferir mantê-lo fora do Git.
 # data/companies.parquet
+
+.env.deploy.*

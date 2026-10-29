@@ -1,0 +1,42 @@
+name: Implantar no servidor
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'SHA completo da imagem aprovada (40 caracteres)'
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Validar entrada e preparar SSH
+        env:
+          DEPLOY_SHA: ${{ inputs.commit }}
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          [[ "$DEPLOY_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 2
+          [[ -n "$SSH_KEY" && -n "$KNOWN_HOSTS" ]] || exit 2
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+      - name: Implantar imagem e verificar saúde
+        env:
+          DEPLOY_SHA: ${{ inputs.commit }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ && "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || exit 2
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:sha-$DEPLOY_SHA"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" bash -s -- "$image" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/cnpj-prospeccao
+          exec bash scripts/deploy.sh "$1"
+          REMOTE

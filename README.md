@@ -1,5 +1,12 @@
 # Prospecção CNPJ — pipeline único (Receita + Streamlit)
 
+## Produção com login e domínio próprio
+
+O aplicativo usa Supabase Auth e histórico individual protegido por RLS. Cadastros novos aguardam liberação; administradores podem definir validade e bloquear contas. **Main file path: `app.py`.** Veja [o guia de implantação](docs/DEPLOY.md) para Secrets do Streamlit, migrações, primeiro administrador, importação do legado, Docker/Caddy, CI, domínio e backups.
+
+A configuração padrão exige login. Para executar o protótipo local sem autenticação, copie `.env.example` para `.env` (`APP_ENV=development`, `AUTH_MODE=disabled`). Não use esse modo em produção. As instruções de histórico compartilhado no GitHub abaixo se aplicam apenas a esse modo legado; com Supabase, o token do GitHub serve somente às cargas da Receita.
+
+
 Este projeto substitui os três notebooks originais por um fluxo único e reproduzível. Ele usa apenas os **Dados Abertos do CNPJ da Receita Federal** para montar a base de prospecção, sem consultar ReceitaWS CNPJ por CNPJ.
 
 ## O ponto-chave do MEI
@@ -95,7 +102,7 @@ python -m src.etl
 streamlit run app.py
 ```
 
-Para visualizar a interface imediatamente, basta instalar as dependências e executar `streamlit run app.py`. Quando a base real não existe, o app abre em **modo de demonstração**, com empresas fictícias, filtros e prévia da mensagem. Os contatos ficam desativados e o banco de histórico não é usado. Após a geração do Parquet, o app usa a base real automaticamente no próximo carregamento.
+Para visualizar a interface local sem login, copie primeiro `.env.example` para `.env`, instale as dependências e execute `streamlit run app.py`. Quando a base real não existe, o app abre em **modo de demonstração**, com empresas fictícias, filtros e prévia da mensagem. Os contatos ficam desativados e o banco de histórico não é usado. Após a geração do Parquet, o app usa a base real automaticamente no próximo carregamento.
 
 ## Abrir no GitHub Codespaces
 
@@ -105,6 +112,8 @@ No terminal do Codespaces, execute:
 
 ```bash
 git pull origin main
+# Apenas para desenvolvimento local sem login, se .env ainda não existir:
+cp -n .env.example .env
 bash scripts/run_app.sh
 ```
 
@@ -194,15 +203,15 @@ O app usa os SVGs oficiais de [PrimeiraEdicao/alphalab-site](https://github.com/
 
 ## Empresas já contatadas ou descartadas
 
-A lista `config/reviewed_cnpjs.csv` contém os **1.544 CNPJs únicos** das 50 planilhas enviadas em `Empresas filtradas.zip`: 1.634 linhas válidas e 90 repetições, sem CNPJs inválidos. Como as planilhas não distinguem contato de descarte, o lote está marcado como **Revisado anteriormente — contato ou descarte**. O TXT de memória contém telefones e não foi interpretado como CNPJ. A lista versiona somente CNPJ, motivo e arquivo de origem; nomes, telefones e e-mails das planilhas não são publicados.
+O histórico legado, importado somente para o dono pelo procedimento em [docs/DEPLOY.md](docs/DEPLOY.md), inclui `config/reviewed_cnpjs.csv`. Essa lista contém os **1.544 CNPJs únicos** das 50 planilhas enviadas em `Empresas filtradas.zip`: 1.634 linhas válidas e 90 repetições, sem CNPJs inválidos. Como as planilhas não distinguem contato de descarte, o lote está marcado como **Revisado anteriormente — contato ou descarte**. O TXT de memória contém telefones e não foi interpretado como CNPJ. A lista versiona somente CNPJ, motivo e arquivo de origem; nomes, telefones e e-mails das planilhas não são publicados.
 
 **Ocultar empresas já revisadas** vem ativado por padrão, independentemente do filtro de histórico. A base da Receita é preservada: a lista é aplicada por CNPJ completo de 14 dígitos a cada carregamento, inclusive quando uma empresa ausente aparece numa nova competência ou uma nova cidade é incluída. Desmarque a opção para consultar esses registros, respeitando os demais filtros. Links de contato ficam desativados, a fila remove empresas revisadas e links antigos não registram abertura nem redirecionam para o WhatsApp.
 
 Para novas listas, abra **Importar empresas já revisadas** na barra lateral. Envie ZIP com planilhas, Excel `.xlsx`, CSV com coluna `CNPJ` ou TXT com um CNPJ por linha. Confira os totais e selecione **Revisado anteriormente**, **Já contatado** ou **Fora do perfil**, conforme o lote. Clique em **Importar CNPJs revisados**. Os dígitos verificadores são validados; duplicatas não criam novos registros. A importação não altera o número de aberturas nem inventa mensagem, telefone ou data de envio. A data salva corresponde à importação da revisão.
 
-Novas importações feitas na interface ficam na tabela `company_reviews` do banco definido por `DATABASE_URL`. Use **Baixar lista de revisão** para guardar um CSV de backup com a união da lista versionada e das novas importações. Esse CSV pode ser reimportado sem perder o motivo de revisão. Sem PostgreSQL ou credencial do GitHub, esse banco fica no disco local da hospedagem. As confirmações feitas pelo botão também podem ser persistidas no repositório privado, conforme a seção de hospedagem. Uploads de listas devem ser guardados em backup ou incorporados ao registro versionado.
+Novas importações e confirmações ficam em `app_reviews` no Supabase, vinculadas à conta. Use **Baixar lista de revisão** para exportar seus registros. Em produção, os CSVs versionados não são aplicados automaticamente às contas. No modo legado de desenvolvimento, continua sendo usada a tabela `company_reviews` via `DATABASE_URL` e a união com os CSVs globais.
 
-Para incorporar uma nova lista ao próprio repositório, sem depender do banco de contatos:
+Para incorporar uma lista ao protótipo legado de desenvolvimento (em produção, importe pela interface da conta):
 
 ```bash
 python -m scripts.import_reviews "caminho/lista.zip"
@@ -217,15 +226,7 @@ Importar novamente preserva os motivos de registros anteriores. A lista usa CNPJ
 
 ## Persistência do banco de contatos
 
-Localmente, o padrão é SQLite:
-
-```env
-DATABASE_URL=sqlite:///data/contact_state.db
-```
-
-Em **Streamlit Community Cloud**, o disco local não é um armazenamento permanente. Antes do Supabase, configure `GITHUB_DATA_TOKEN` para persistir as confirmações em `state/contacted_cnpjs.csv` no repositório privado. O aplicativo combina esse registro com a lista de revisões e o SQLite, inclusive depois de um reinício. Escritas concorrentes usam o SHA do arquivo, mesclam os CNPJs e repetem em caso de conflito. Sem essa credencial nem banco externo, use **Baixar lista de revisão** como backup e reimporte após um reinício.
-
-O futuro `DATABASE_URL` do Supabase/PostgreSQL continua compatível com o mesmo código. Esta entrega é um protótipo **compartilhado**: ainda não tem login, assinatura ou separação do histórico por usuário. A confirmação de um usuário afeta as listas de todos nesta instância.
+Em produção, o histórico está no PostgreSQL do Supabase, com RLS e JWT do usuário, e sobrevive às reinicializações do Streamlit. As credenciais e a migração estão em [docs/DEPLOY.md](docs/DEPLOY.md). `DATABASE_URL` é usado apenas no modo legado de desenvolvimento, com SQLite ou SQLAlchemy; não habilita isolamento de usuários por si só. A migração do legado exige UUID e e-mail do dono e não compartilha seu histórico com clientes novos.
 
 ## Observações de escala
 
@@ -235,7 +236,7 @@ Se futuramente o produto precisar atender várias cidades/usuários, a evoluçã
 
 - ETL nacional em máquina/serviço com mais disco;
 - Parquet particionado por UF/município em object storage;
-- PostgreSQL para estado e usuários;
+- consulta paginada da base pública no servidor;
 - API/FastAPI ou consultas DuckDB/Polars sobre as partições.
 
 ## Testes
@@ -270,18 +271,6 @@ No [Streamlit Community Cloud](https://share.streamlit.io/), entre na sua conta 
 
 A base `data/companies.parquet` já faz parte do repositório. A publicação não precisa rodar a carga nacional novamente. O aplicativo usa `requirements.txt`; Node/npm são usados apenas pelos testes e não são necessários para executar o app.
 
-Em **Advanced settings → Secrets**, use [.streamlit/secrets.toml.example](.streamlit/secrets.toml.example) como referência:
+Em **Advanced settings → Secrets**, use [.streamlit/secrets.toml.example](.streamlit/secrets.toml.example) e siga [docs/DEPLOY.md](docs/DEPLOY.md). O login, a confirmação de e-mail, as migrações e a ativação do primeiro administrador precisam estar configurados antes do acesso à base. `GITHUB_DATA_TOKEN` é opcional para cargas administrativas; o histórico usa o Supabase.
 
-```toml
-GITHUB_DATA_TOKEN = "SEU_TOKEN_RESTRITO_A_ESTE_REPOSITORIO"
-GITHUB_DATA_REPOSITORY = "PrimeiraEdicao/cnpj-prospeccao"
-GITHUB_DATA_BRANCH = "main"
-# Opcional, para restringir as cargas enquanto o app não tem login:
-# DATA_UPDATE_ADMIN_KEY = "SUA_CHAVE"
-```
-
-Crie um token fine-grained restrito a este repositório, com **Actions: read and write** para solicitar/acompanhar as cargas e **Contents: read and write** para ler a base e salvar o histórico de contatos. O token fica somente no servidor; não é passado ao componente do navegador. Não envie credenciais pelo chat nem versione `.streamlit/secrets.toml`.
-
-O processamento pesado continua no GitHub Actions. O pedido feito pela interface tem um identificador para acompanhar o job correto, impede duplicação imediata e recusa outra carga enquanto há uma em andamento. Se a carga falhar, a base anterior continua disponível. O botão de carregar baixa o Parquet e os metadados do mesmo commit, verifica sua integridade e só ativa a nova versão após validar ambos. Essa troca preserva o histórico de contatos.
-
-Para testar sem a credencial, o aplicativo abre a base já incluída e permite links diretos, seleção e confirmações no SQLite local. A inclusão de cidades e o histórico durável pelo GitHub ficam desativados até configurar os Secrets. A integração com login, histórico individual e cobrança ficará para a etapa do Supabase.
+Para um domínio próprio, use o Compose com Caddy e as instruções do mesmo guia. As etapas de DNS, SMTP, Secrets, primeiro acesso, backup e teste de recuperação exigem os dados reais da sua infraestrutura.

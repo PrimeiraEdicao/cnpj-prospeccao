@@ -1,0 +1,79 @@
+name: Validar aplicação e imagem
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths-ignore: ['data/**', 'state/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  security-and-database:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: cnpj_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with: {python-version: '3.12', cache: pip}
+      - run: pip install -r requirements.lock
+      - run: python -m pytest -q
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - run: npm ci && npm test
+        working-directory: tests/frontend
+      - run: npm ci && npm test
+        working-directory: tests/postgres
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/cnpj_test
+  image:
+    needs: security-and-database
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validar Compose sem imprimir configuração
+        env:
+          APP_DOMAIN: test.example.com
+        run: |
+          cp .env.production.example .env.production
+          docker compose --env-file .env.production config --quiet
+          docker run --rm -e APP_DOMAIN=test.example.com -v "$PWD/infra/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: Definir nome da imagem
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - name: Login no registro
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Construir imagem
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}:sha-${{ github.sha }}
+        run: docker build -t "$IMAGE" .
+      - name: Validar container e tela inicial protegida
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}:sha-${{ github.sha }}
+        run: |
+          docker run -d --name app-test -p 127.0.0.1:8501:8501 "$IMAGE"
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8501/_stcore/health; then break; fi
+            sleep 2
+          done
+          curl --fail --silent http://127.0.0.1:8501/_stcore/health
+          docker exec app-test python -c "from streamlit.testing.v1 import AppTest; a=AppTest.from_file('app.py').run(timeout=20); assert not a.exception; assert not a.metric; assert a.title[0].value == 'Configuração de acesso pendente'"
+      - name: Publicar imagem imutável
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}:sha-${{ github.sha }}
+        run: docker push "$IMAGE"

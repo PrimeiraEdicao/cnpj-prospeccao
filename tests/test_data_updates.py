@@ -144,3 +144,19 @@ def test_download_reads_metadata_and_parquet_at_exact_same_commit(tmp_path):
     newer['generated_at_utc'] = '2026-10-29T12:00:00+00:00'
     (data / 'release.json').write_text(json.dumps(newer))
     assert active_data_paths(tmp_path) == (data / 'companies.parquet', data / 'release.json')
+
+
+def test_runtime_data_root_uses_bundled_base_without_losing_persistent_snapshot(tmp_path):
+    from src.data_updates import active_data_paths
+    runtime=tmp_path/'runtime';bundle=tmp_path/'bundle'
+    (bundle/'data').mkdir(parents=True)
+    (bundle/'data/companies.parquet').touch()
+    (bundle/'data/release.json').write_text('{"generated_at_utc":"2026-01-01T00:00:00Z"}')
+    assert active_data_paths(runtime,bundle)==(bundle/'data/companies.parquet',bundle/'data/release.json')
+    version='a'*40
+    folder=runtime/'data/downloaded'/version;folder.mkdir(parents=True)
+    (folder/'companies.parquet').touch();(folder/'release.json').write_text('{"generated_at_utc":"2026-02-01T00:00:00Z"}')
+    (runtime/'data/active_snapshot.json').write_text('{"version":"'+version+'"}')
+    assert active_data_paths(runtime,bundle)[0]==folder/'companies.parquet'
+    (bundle/'data/release.json').write_text('{"generated_at_utc":"2026-03-01T00:00:00Z"}')
+    assert active_data_paths(runtime,bundle)[0]==bundle/'data/companies.parquet'
